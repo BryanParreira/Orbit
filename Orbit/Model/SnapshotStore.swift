@@ -37,14 +37,14 @@ enum SnapshotStore {
 
     /// Clone the VM's current state. The VM must be stopped (or suspended).
     @discardableResult
-    static func create(named name: String, for vm: VMInstance) throws -> VMSnapshot {
+    static func create(named name: String, for vm: VMInstance) async throws -> VMSnapshot {
         let bundle = vm.bundle
         let files = bundle.stateFiles(for: vm.config) + qemuFirmware(in: bundle)
         let includesMemory = files.contains(bundle.savedStateURL)
         let snapshot = VMSnapshot(name: name, includesMemory: includesMemory, files: files.map(\.lastPathComponent))
         let dir = directory(for: snapshot, in: bundle)
         do {
-            try FileCloner.clone(files, into: dir)
+            try await FileCloner.cloneInBackground(files, into: dir)
             if FileManager.default.fileExists(atPath: bundle.screenshotURL.path) {
                 try? FileCloner.clone(bundle.screenshotURL, to: dir.appendingPathComponent(screenshotName))
             }
@@ -57,7 +57,7 @@ enum SnapshotStore {
     }
 
     /// Replace the VM's state with the snapshot's. The VM must be stopped.
-    static func restore(_ snapshot: VMSnapshot, for vm: VMInstance) throws {
+    static func restore(_ snapshot: VMSnapshot, for vm: VMInstance) async throws {
         let bundle = vm.bundle
         let dir = directory(for: snapshot, in: bundle)
         // RAM from after the snapshot would not match its disks
@@ -67,7 +67,7 @@ enum SnapshotStore {
             guard FileManager.default.fileExists(atPath: source.path) else {
                 throw VMError.missingFile("\(name) in snapshot \(snapshot.name)")
             }
-            try FileCloner.clone(source, to: bundle.url.appendingPathComponent(name))
+            try await FileCloner.cloneInBackground(source, to: bundle.url.appendingPathComponent(name))
         }
         let shot = dir.appendingPathComponent(screenshotName)
         if FileManager.default.fileExists(atPath: shot.path) {

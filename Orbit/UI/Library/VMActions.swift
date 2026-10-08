@@ -33,17 +33,19 @@ enum VMActions {
                     AppRouter.shared.selection = library.vms.first?.id
                 }
             } catch {
-                vm.lastError = error.localizedDescription
+                vm.report(error)
             }
         }
     }
 
     static func duplicate(_ vm: VMInstance, library: VMLibrary) {
-        do {
-            let copy = try library.duplicate(vm)
-            AppRouter.shared.selection = copy.id
-        } catch {
-            vm.lastError = error.localizedDescription
+        Task {
+            do {
+                let copy = try await library.duplicate(vm)
+                AppRouter.shared.selection = copy.id
+            } catch {
+                vm.report(error)
+            }
         }
     }
 }

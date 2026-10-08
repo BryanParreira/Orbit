@@ -17,6 +17,15 @@ struct LibraryView: View {
                 VMDetailView(vm: vm)
                     .id(vm.id)
                     .focusedSceneValue(\.selectedVM, vm)
+            } else if library.isRootUnavailable {
+                ContentUnavailableView {
+                    Label("Library Unavailable", systemImage: "externaldrive.badge.exclamationmark")
+                } description: {
+                    Text("Orbit can't reach \(library.rootURL.path(percentEncoded: false)). If it's on an external drive, connect it. You can also choose another location in Settings.")
+                } actions: {
+                    Button("Try Again") { library.reload() }
+                    SettingsLink { Text("Open Settings") }
+                }
             } else if library.vms.isEmpty {
                 WelcomeView()
             } else {

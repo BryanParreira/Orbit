@@ -58,3 +58,146 @@ struct EngineTests {
         #expect(HostInfo.recommendedCPUs <= HostInfo.maxCPUs)
     }
 }
+
+/// Launches real QEMU with the exact arguments Orbit generates, headless and paused,
+/// to catch device and property errors that only show up when the machine is built.
+@Suite(.serialized)
+struct QEMULaunchTests {
+    struct Scenario: CustomStringConvertible {
+        let name: String
+        let os: GuestOS
+        let arch: GuestArchitecture
+        let interface: DiskInterface
+        var description: String { name }
+    }
+
+    static let scenarios = [
+        Scenario(name: "Windows 11 ARM", os: .windows, arch: .arm64, interface: .nvme),
+        Scenario(name: "Linux ARM", os: .linux, arch: .arm64, interface: .virtio),
+        Scenario(name: "Linux x86-64", os: .linux, arch: .x86_64, interface: .virtio),
+        Scenario(name: "Other x86-64", os: .other, arch: .x86_64, interface: .nvme),
+    ]
+
+    @Test(arguments: scenarios)
+    func launches(_ scenario: Scenario) async throws {
+        guard let binary = HostInfo.qemuBinary(for: scenario.arch), let data = HostInfo.qemuDataDirectory() else { return }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("qemu-launch-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let bundle = VMBundle(url: dir)
+
+        try DiskImageService.createSparseRaw(at: dir.appendingPathComponent("disk.img"), bytes: 1 << 30)
+        try DiskImageService.createSparseRaw(at: dir.appendingPathComponent("installer.iso"), bytes: 4 << 20)
+        var config = VMConfiguration(name: scenario.name, engine: .qemu, guestOS: scenario.os, architecture: scenario.arch, cpuCount: 2, memoryMiB: 1024)
+        config.disks = [
+            DiskConfiguration(path: "disk.img", sizeGiB: 1, interface: scenario.interface),
+            DiskConfiguration(path: dir.appendingPathComponent("installer.iso").path, sizeGiB: 0, isReadOnly: true, interface: .usb, isRemovable: true),
+        ]
+        config.network.portForwards = [PortForward(hostPort: 0, guestPort: 22)]
+        config.sharedFolders = [SharedFolder(path: dir.path)]
+
+        let builder = QEMUArgumentBuilder(config: config, bundle: bundle, qmpSocket: dir.appendingPathComponent("q").path, dataDirectory: data)
+        try FileManager.default.copyItem(at: builder.firmwareVarsTemplateURL(), to: builder.efiVariablesURL)
+        var args = builder.build()
+        // same machine, but headless and paused
+        if let i = args.firstIndex(of: "-display") { args[i + 1] = "none" }
+        args.append("-S")
+
+        let process = Process()
+        process.executableURL = binary
+        process.arguments = args
+        let errors = Pipe()
+        process.standardError = errors
+        process.standardOutput = FileHandle.nullDevice
+        try process.run()
+        try await Task.sleep(for: .seconds(3))
+        let alive = process.isRunning
+        if alive { process.terminate() }
+        process.waitUntilExit()
+        let message = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        #expect(alive, "QEMU rejected the \(scenario.name) machine: \(message)")
+    }
+}
+
+/// Every Apple-engine Linux configuration Orbit can produce must pass Virtualization's validator.
+@Suite(.serialized)
+@MainActor
+struct AppleConfigurationTests {
+    struct Variant: CustomStringConvertible {
+        let name: String
+        let apply: (inout VMConfiguration) -> Void
+        var description: String { name }
+    }
+
+    static let variants: [Variant] = [
+        Variant(name: "defaults") { _ in },
+        Variant(name: "NVMe disk") { $0.disks[0].interface = .nvme },
+        Variant(name: "USB disk") { $0.disks[0].interface = .usb },
+        Variant(name: "no network, no audio") { $0.network.mode = .none; $0.audioOutput = false },
+        Variant(name: "host-only network") { $0.network.mode = .hostOnly },
+        Variant(name: "microphone + clipboard") { $0.audioInput = true; $0.clipboardSharing = true },
+        Variant(name: "rosetta + nested + shared folder") {
+            $0.rosetta = true; $0.nestedVirtualization = true
+            $0.sharedFolders = [SharedFolder(path: NSTemporaryDirectory())]
+        },
+        Variant(name: "fast disks, fixed display") { $0.diskPerformance = .fast; $0.display.dynamicResolution = false },
+        Variant(name: "safe disks, read-only data disk") {
+            $0.diskPerformance = .safe
+            $0.disks.append(DiskConfiguration(path: "data.img", sizeGiB: 1, isReadOnly: true))
+        },
+    ]
+
+    @Test(arguments: variants)
+    func validates(_ variant: Variant) async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vz-\(UUID().uuidString).orbitvm")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let bundle = VMBundle(url: dir)
+        try PlatformProvisioner.provisionGeneric(bundle: bundle)
+        try DiskImageService.createSparseRaw(at: dir.appendingPathComponent("disk.img"), bytes: 1 << 30)
+        try DiskImageService.createSparseRaw(at: dir.appendingPathComponent("data.img"), bytes: 1 << 30)
+        try DiskImageService.createSparseRaw(at: dir.appendingPathComponent("installer.iso"), bytes: 4 << 20)
+
+        var config = VMConfiguration(name: variant.name, engine: .apple, guestOS: .linux, cpuCount: 2, memoryMiB: 2048)
+        config.disks = [
+            DiskConfiguration(path: "disk.img", sizeGiB: 1),
+            DiskConfiguration(path: dir.appendingPathComponent("installer.iso").path, sizeGiB: 0, isReadOnly: true, interface: .usb, isRemovable: true),
+        ]
+        variant.apply(&config)
+
+        var builder = AppleConfigurationBuilder(config: config, bundle: bundle)
+        let vz = try builder.build()
+        try vz.validate()
+    }
+
+    @Test func missingDiskFailsWithItsName() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vz-\(UUID().uuidString).orbitvm")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let bundle = VMBundle(url: dir)
+        try PlatformProvisioner.provisionGeneric(bundle: bundle)
+        var config = VMConfiguration(name: "x", engine: .apple, guestOS: .linux, cpuCount: 2, memoryMiB: 2048)
+        config.disks = [DiskConfiguration(path: "gone.img", sizeGiB: 1)]
+        var builder = AppleConfigurationBuilder(config: config, bundle: bundle)
+        #expect(throws: VMError.self) { try builder.build() }
+    }
+}
+
+@Suite struct OnlineCatalogTests {
+    /// Apple's catalog and every distro mirror must resolve to a real, downloadable image.
+    @MainActor @Test func macOSRestoreImageResolves() async throws {
+        let latest = try await PlatformProvisioner.latestRestoreImage()
+        #expect(latest.url.pathExtension == "ipsw")
+        #expect(!latest.version.isEmpty)
+    }
+
+    @Test(arguments: [ISOResolver.ubuntuDesktop, .fedoraWorkstation, .debianNetinst, .alpineVirt])
+    func distroResolves(_ resolver: ISOResolver) async throws {
+        let resolved = try await resolver.resolve()
+        #expect(resolved.url.pathExtension == "iso")
+        var request = URLRequest(url: resolved.url)
+        request.httpMethod = "HEAD"
+        let (_, response) = try await URLSession.shared.data(for: request)
+        #expect((response as? HTTPURLResponse)?.statusCode == 200, "\(resolved.url)")
+    }
+}

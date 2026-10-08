@@ -212,7 +212,7 @@ private struct ResizeSheet: View {
                             }
                             vm.refreshFileState()
                         } catch {
-                            vm.lastError = error.localizedDescription
+                            vm.report(error)
                         }
                         working = false
                         dismiss()
@@ -273,18 +273,27 @@ private struct NetworkSection: View {
 private struct PortForwardEditor: View {
     @Binding var forwards: [PortForward]
 
+    /// Binding by id, never by index: rows can be deleted while SwiftUI still holds bindings to them.
+    private func binding<Value>(_ id: PortForward.ID, _ keyPath: WritableKeyPath<PortForward, Value>, default value: Value) -> Binding<Value> {
+        Binding(
+            get: { forwards.first { $0.id == id }?[keyPath: keyPath] ?? value },
+            set: { newValue in
+                if let i = forwards.firstIndex(where: { $0.id == id }) { forwards[i][keyPath: keyPath] = newValue }
+            })
+    }
+
     var body: some View {
-        ForEach($forwards) { $forward in
+        ForEach(forwards) { forward in
             HStack {
-                Picker("", selection: $forward.isUDP) {
+                Picker("", selection: binding(forward.id, \.isUDP, default: false)) {
                     Text("TCP").tag(false)
                     Text("UDP").tag(true)
                 }
                 .labelsHidden()
                 .frame(width: 70)
-                TextField("Host", value: $forward.hostPort, format: .number.grouping(.never))
+                TextField("Host", value: binding(forward.id, \.hostPort, default: 0), format: .number.grouping(.never))
                 Image(systemName: "arrow.right").foregroundStyle(.secondary)
-                TextField("Guest", value: $forward.guestPort, format: .number.grouping(.never))
+                TextField("Guest", value: binding(forward.id, \.guestPort, default: 0), format: .number.grouping(.never))
                 Button(role: .destructive) {
                     forwards.removeAll { $0.id == forward.id }
                 } label: {
@@ -306,12 +315,16 @@ private struct SharingSection: View {
 
     var body: some View {
         Section("Sharing") {
-            ForEach($config.sharedFolders) { $folder in
+            ForEach(config.sharedFolders) { folder in
                 HStack {
                     Label(folder.name, systemImage: "folder.fill")
                         .help(folder.path)
                     Spacer()
-                    Toggle("Read only", isOn: $folder.isReadOnly)
+                    Toggle("Read only", isOn: Binding(
+                        get: { config.sharedFolders.first { $0.id == folder.id }?.isReadOnly ?? false },
+                        set: { value in
+                            if let i = config.sharedFolders.firstIndex(where: { $0.id == folder.id }) { config.sharedFolders[i].isReadOnly = value }
+                        }))
                         .toggleStyle(.checkbox)
                         .controlSize(.small)
                     Button(role: .destructive) {

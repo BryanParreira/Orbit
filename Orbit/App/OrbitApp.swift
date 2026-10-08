@@ -25,6 +25,9 @@ struct OrbitApp: App {
                     .environment(library)
                     .environment(router)
                     .tint(Theme.ink)
+            } else {
+                // the machine was deleted while its window was open
+                ClosingWindow()
             }
         }
         .defaultSize(width: 1280, height: 820)
@@ -75,6 +78,14 @@ final class AppRouter {
     func showLibrary() {
         openWindowAction?(id: SceneID.library)
         NSApp.activate()
+    }
+}
+
+private struct ClosingWindow: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        Color.clear.onAppear { dismiss() }
     }
 }
 

@@ -261,7 +261,12 @@ private struct InstallProgressCard: View {
                     .controlSize(.small)
             } else if let progress = vm.installProgress {
                 ProgressView(value: progress)
-                Text("\(Int(progress * 100))%").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                HStack {
+                    Text("\(Int(progress * 100))%").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Cancel") { vm.cancelInstallation() }
+                        .controlSize(.small)
+                }
             } else {
                 ProgressView().progressViewStyle(.linear)
             }

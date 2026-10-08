@@ -148,6 +148,11 @@ enum SelfTest {
             log("stopped: \(vm.state.label) error=\(vm.lastError ?? "-")")
             let log2 = (try? String(contentsOf: vm.bundle.logURL, encoding: .utf8)) ?? ""
             log("qemu log: \(log2.isEmpty ? "(empty)" : log2.prefix(300).description)")
+            vm.config.qemu.extraArguments = ["-display", "none", "-not-a-real-flag"]
+            vm.lastError = nil
+            let t0 = Date()
+            await vm.start()
+            log("bad start: state=\(vm.state.label) after \(String(format: "%.1f", Date().timeIntervalSince(t0)))s error=\(vm.lastError ?? "-")")
         } catch {
             log("FAIL \(error.localizedDescription)")
         }
@@ -207,13 +212,21 @@ enum SelfTest {
         log("stopped: \(vm.state.label) error=\(vm.lastError ?? "-")")
 
         do {
-            let copy = try library.duplicate(vm)
+            let copy = try await library.duplicate(vm)
             log("duplicate ok: \(copy.bundle.url.lastPathComponent)")
             await copy.start(options: .disposable)
             log("disposable run: \(copy.state.label) error=\(copy.lastError ?? "-")")
             try? await Task.sleep(for: .seconds(3))
+            func overlays() -> Int {
+                ((try? FileManager.default.contentsOfDirectory(atPath: NSTemporaryDirectory())) ?? []).filter { $0.hasPrefix("orbit-disposable-") }.count
+            }
+            log("overlays before restart: \(overlays())")
+            await copy.restart()
+            log("after restart: \(copy.state.label) disposable=\(copy.isDisposableRun) overlays=\(overlays()) error=\(copy.lastError ?? "-")")
+            await vm.restart()
+            log("restart of stopped vm is a no-op: \(vm.state.label)")
             await copy.forceStop()
-            log("disposable stopped, overlay cleaned=\(!FileManager.default.temporaryDirectory.path.isEmpty)")
+            log("disposable stopped, overlays left=\(overlays())")
         } catch {
             log("FAIL duplicate: \(error.localizedDescription)")
         }

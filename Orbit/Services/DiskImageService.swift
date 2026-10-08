@@ -77,6 +77,8 @@ enum DiskImageService {
         return Int64(values?.totalFileAllocatedSize ?? values?.fileAllocatedSize ?? 0)
     }
 
+    /// Run a tool and return its output. Output is drained while the tool runs, so chatty
+    /// tools can't fill the pipe and stall.
     @discardableResult
     static func run(_ tool: URL, _ arguments: [String]) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
@@ -86,20 +88,44 @@ enum DiskImageService {
             let pipe = Pipe()
             process.standardOutput = pipe
             process.standardError = pipe
+            let output = OutputBuffer()
+            pipe.fileHandleForReading.readabilityHandler = { handle in
+                output.append(handle.availableData)
+            }
             process.terminationHandler = { process in
-                let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                pipe.fileHandleForReading.readabilityHandler = nil
+                output.append(pipe.fileHandleForReading.readDataToEndOfFile())
+                let text = output.string
                 if process.terminationStatus == 0 {
-                    continuation.resume(returning: output)
+                    continuation.resume(returning: text)
                 } else {
-                    continuation.resume(throwing: DiskImageError.toolFailed(tool.lastPathComponent, output.trimmingCharacters(in: .whitespacesAndNewlines)))
+                    let tail = text.split(separator: "\n").suffix(4).joined(separator: "\n")
+                    continuation.resume(throwing: DiskImageError.toolFailed(tool.lastPathComponent, tail.trimmingCharacters(in: .whitespacesAndNewlines)))
                 }
             }
             do {
                 try process.run()
             } catch {
+                pipe.fileHandleForReading.readabilityHandler = nil
                 continuation.resume(throwing: error)
             }
         }
+    }
+}
+
+/// Thread-safe accumulator for a child process's output.
+private final class OutputBuffer: @unchecked Sendable {
+    private var data = Data()
+    private let lock = NSLock()
+
+    func append(_ chunk: Data) {
+        guard !chunk.isEmpty else { return }
+        lock.lock(); data.append(chunk); lock.unlock()
+    }
+
+    var string: String {
+        lock.lock(); defer { lock.unlock() }
+        return String(decoding: data, as: UTF8.self)
     }
 }
 
@@ -123,6 +149,15 @@ enum FileCloner {
         for file in files {
             try clone(file, to: directory.appendingPathComponent(file.lastPathComponent))
         }
+    }
+
+    /// Off the main thread: instant on APFS, but a full copy on other file systems.
+    static func cloneInBackground(_ files: [URL], into directory: URL) async throws {
+        try await Task.detached(priority: .userInitiated) { try clone(files, into: directory) }.value
+    }
+
+    static func cloneInBackground(_ source: URL, to destination: URL) async throws {
+        try await Task.detached(priority: .userInitiated) { try clone(source, to: destination) }.value
     }
 }
 

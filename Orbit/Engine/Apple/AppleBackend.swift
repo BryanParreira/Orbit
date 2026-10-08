@@ -31,6 +31,8 @@ final class AppleBackend: NSObject, VMBackend {
     /// Clones used by a disposable run, deleted when it stops.
     private var overlayDirectory: URL?
     private var spiceAgent: VZSpiceAgentPortAttachment?
+    /// Progress of a running macOS installation, cancellable.
+    private var installProgress: Progress?
 
     init(config: VMConfiguration, bundle: VMBundle) {
         self.config = config
@@ -57,7 +59,7 @@ final class AppleBackend: NSObject, VMBackend {
             let hasSavedState = FileManager.default.fileExists(atPath: bundle.savedStateURL.path)
             let disposable = options.contains(.disposable)
             if disposable {
-                try prepareOverlay()
+                try await prepareOverlay()
             }
             let restoring = hasSavedState && !disposable && !options.contains(.recovery) && !options.contains(.coldBoot)
             if hasSavedState && !restoring && !disposable {
@@ -77,7 +79,9 @@ final class AppleBackend: NSObject, VMBackend {
                 } catch {
                     // state is stale (config or host changed): drop it and cold boot
                     try? FileManager.default.removeItem(at: bundle.savedStateURL)
+                    vm.delegate = nil
                     vm = try makeVirtualMachine()
+                    state = .starting
                 }
             }
             if config.guestOS == .macOS {
@@ -145,10 +149,24 @@ final class AppleBackend: NSObject, VMBackend {
         }
     }
 
+    /// Power-cycle the same machine. Keeps a disposable run on its throwaway clones.
     func restart() async throws {
-        guard virtualMachine != nil else { return }
-        try await forceStop()
-        try await start(options: .coldBoot)
+        guard let vm = virtualMachine, state == .running || state == .paused else { return }
+        state = .stopping
+        do {
+            try await vm.stop()
+            state = .starting
+            if config.guestOS == .macOS {
+                try await vm.start(options: VZMacOSVirtualMachineStartOptions())
+            } else {
+                try await vm.start()
+            }
+            state = .running
+        } catch {
+            cleanUp()
+            state = .stopped
+            throw error
+        }
     }
 
     func suspend() async throws {
@@ -168,9 +186,11 @@ final class AppleBackend: NSObject, VMBackend {
             throw error
         }
         // stopping flushes every disk write, so the saved RAM and the disks agree
+        defer {
+            cleanUp()
+            state = .stopped
+        }
         try await vm.stop()
-        cleanUp()
-        state = .stopped
     }
 
     // MARK: - macOS installation
@@ -187,18 +207,34 @@ final class AppleBackend: NSObject, VMBackend {
         }
         let vm = try makeVirtualMachine()
         let installer = VZMacOSInstaller(virtualMachine: vm, restoringFromImageAt: ipsw)
+        installProgress = installer.progress
+        defer { installProgress = nil }
         observation = installer.progress.observe(\.fractionCompleted, options: [.initial, .new]) { p, _ in
             let fraction = p.fractionCompleted
             Task { @MainActor in progress(fraction) }
         }
         do {
             try await installer.install()
-        } catch let error as NSError where error.domain == VZErrorDomain && error.code == VZError.Code.restoreImageCatalogLoadFailed.rawValue {
-            throw VMError.invalidConfiguration("Device support is out of date. Open Software Update on this Mac and install any updates.")
+        } catch let error as NSError where error.domain == VZErrorDomain && error.code == VZError.Code.installationFailed.rawValue {
+            throw await Self.installFailure(for: ipsw) ?? error
         }
         if vm.state == .running {
             try? await vm.stop()
         }
+    }
+
+    func cancelInstallation() {
+        installProgress?.cancel()
+    }
+
+    /// Installing a guest newer than the host fails late with a generic error; explain it.
+    private static func installFailure(for ipsw: URL) async -> Error? {
+        guard let image = try? await VZMacOSRestoreImage.image(from: ipsw) else { return nil }
+        let guest = image.operatingSystemVersion, host = ProcessInfo.processInfo.operatingSystemVersion
+        let g = [guest.majorVersion, guest.minorVersion, guest.patchVersion]
+        let h = [host.majorVersion, host.minorVersion, host.patchVersion]
+        guard h.lexicographicallyPrecedes(g) else { return nil }
+        return VMError.invalidConfiguration("This restore image is macOS \(guest.displayString), newer than this Mac (macOS \(host.displayString)). Update this Mac, or use an older restore image.")
     }
 
     // MARK: - Display helpers
@@ -254,11 +290,11 @@ final class AppleBackend: NSObject, VMBackend {
         return vm
     }
 
-    private func prepareOverlay() throws {
+    private func prepareOverlay() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("orbit-disposable-\(UUID().uuidString)")
         let files = bundle.stateFiles(for: config).filter { $0 != bundle.savedStateURL }
-        try FileCloner.clone(files, into: directory)
-        overlayDirectory = directory
+        overlayDirectory = directory // set first so a failed copy is still cleaned up
+        try await FileCloner.cloneInBackground(files, into: directory)
     }
 
     private func cleanUp() {

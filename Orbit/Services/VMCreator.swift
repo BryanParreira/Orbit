@@ -142,9 +142,7 @@ enum VMCreator {
                 }
             }
         } catch {
-            if !(error is CancellationError) && (error as? URLError)?.code != .cancelled {
-                vm.lastError = error.localizedDescription
-            }
+            vm.report(error)
         }
         vm.installStatus = nil
         vm.installProgress = nil

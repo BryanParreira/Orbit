@@ -4,7 +4,7 @@ import Foundation
 /// import is instant and the original UTM VM keeps working.
 @MainActor
 enum UTMImporter {
-    static func importPackage(at url: URL, into library: VMLibrary) throws -> VMInstance {
+    static func importPackage(at url: URL, into library: VMLibrary) async throws -> VMInstance {
         let plistURL = url.appendingPathComponent("config.plist")
         guard let data = try? Data(contentsOf: plistURL),
               let root = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else {
@@ -47,14 +47,16 @@ enum UTMImporter {
                     config.disks.append(DiskConfiguration(path: source.path, sizeGiB: 0, isReadOnly: true, interface: .usb, isRemovable: true))
                     continue
                 }
-                try FileCloner.clone(source, to: bundle.url.appendingPathComponent(imageName))
+                try await FileCloner.cloneInBackground(source, to: bundle.url.appendingPathComponent(imageName))
                 let interface: DiskInterface = switch drive["Interface"] as? String {
                 case "NVMe": .nvme
                 case "USB": .usb
                 default: (drive["Nvme"] as? Bool) == true ? .nvme : .virtio
                 }
-                let size = (try? FileManager.default.attributesOfItem(atPath: source.path)[.size] as? Int64) ?? 0
-                config.disks.append(DiskConfiguration(path: imageName, sizeGiB: Int(max(1, size / 1_073_741_824)),
+                // virtual size, not file size: qcow2 and sparse images are much smaller than the disk they hold
+                let format: DiskFormat = if case .diskImage(let f) = FileInspector.inspect(source) { f } else { .raw }
+                let size = await FileInspector.virtualSizeGiB(of: source, format: format)
+                config.disks.append(DiskConfiguration(path: imageName, sizeGiB: size,
                                                       isReadOnly: drive["ReadOnly"] as? Bool ?? false, interface: interface))
             }
 

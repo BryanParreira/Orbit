@@ -103,12 +103,21 @@ final class VMInstance: Identifiable {
     /// Quit path: suspend when possible, otherwise ask the guest to shut down and wait briefly.
     func stopForQuit() async {
         guard state.isActive else { return }
-        if config.suspendOnQuit && canSuspend && !isDisposableRun {
+        if state == .installing {
+            // an interrupted install can't be resumed; cancel it cleanly
+            appleBackend?.cancelInstallation()
+            for _ in 0..<50 where state.isActive {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            return
+        }
+        if config.suspendOnQuit && canSuspend && !isDisposableRun && (state == .running || state == .paused) {
             await suspend()
             if !state.isActive { return }
         }
         await requestStop()
-        for _ in 0..<50 where state.isActive {
+        // Windows in particular can take a while to shut down cleanly
+        for _ in 0..<150 where state.isActive {
             try? await Task.sleep(for: .milliseconds(200))
         }
         if state.isActive {
@@ -122,6 +131,11 @@ final class VMInstance: Identifiable {
     }
 
     // MARK: - macOS install
+
+    func cancelInstallation() {
+        activeDownload?.cancel()
+        appleBackend?.cancelInstallation()
+    }
 
     func installMacOS(from ipsw: URL) async {
         guard let backend = makeBackendIfNeeded() as? AppleBackend else { return }
@@ -212,7 +226,14 @@ final class VMInstance: Identifiable {
                 await captureScreenshot()
                 try await backend?.suspend()
             }
-            try SnapshotStore.create(named: name, for: self)
+            do {
+                try await SnapshotStore.create(named: name, for: self)
+            } catch {
+                // the machine was suspended for the snapshot: bring it back before reporting
+                if wasRunning { try? await backend?.start(options: []) }
+                refreshFileState()
+                throw error
+            }
             if wasRunning {
                 // resumes from the state that was just captured
                 try await backend?.start(options: [])
@@ -227,7 +248,7 @@ final class VMInstance: Identifiable {
             if state.isActive {
                 try await backend?.forceStop()
             }
-            try SnapshotStore.restore(snapshot, for: self)
+            try await SnapshotStore.restore(snapshot, for: self)
             if let image = NSImage(contentsOf: bundle.screenshotURL) { screenshot = image }
             refreshFileState()
         }
@@ -237,7 +258,7 @@ final class VMInstance: Identifiable {
         do {
             try SnapshotStore.delete(snapshot, for: self)
         } catch {
-            lastError = error.localizedDescription
+            report(error)
         }
         refreshFileState()
     }
@@ -278,7 +299,7 @@ final class VMInstance: Identifiable {
         do {
             try bundle.save(config)
         } catch {
-            lastError = "Could not save settings: \(error.localizedDescription)"
+            lastError = "Couldn't save settings: \(ErrorMessages.message(for: error) ?? error.localizedDescription)"
         }
     }
 
@@ -316,7 +337,7 @@ final class VMInstance: Identifiable {
                 self.refreshFileState()
             }
             if let error {
-                self.lastError = error.localizedDescription
+                self.report(error)
             }
         }
         self.backend = backend
@@ -327,7 +348,14 @@ final class VMInstance: Identifiable {
         do {
             try await body()
         } catch {
-            lastError = error.localizedDescription
+            report(error)
+        }
+    }
+
+    /// Show an error to the user, unless it was a cancellation.
+    func report(_ error: Error) {
+        if let message = ErrorMessages.message(for: error) {
+            lastError = message
         }
     }
 }

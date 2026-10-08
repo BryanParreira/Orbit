@@ -10,6 +10,7 @@ final class QEMUBackend: VMBackend {
     private var config: VMConfiguration
 
     private var process: Process?
+    private var logHandle: FileHandle?
     private var tpmProcess: Process?
     private var qmp: QMPClient?
     private var overlayDirectory: URL?
@@ -39,6 +40,7 @@ final class QEMUBackend: VMBackend {
         }
         state = .starting
         isStopping = false
+        var launched: Process?
         do {
             // sun_path is limited to 104 bytes, so sockets live in a short temp directory
             let sockets = URL(fileURLWithPath: "/tmp/orbit-\(config.id.uuidString.prefix(8))")
@@ -53,8 +55,8 @@ final class QEMUBackend: VMBackend {
                 let overlay = FileManager.default.temporaryDirectory.appendingPathComponent("orbit-disposable-\(UUID().uuidString)")
                 var files = bundle.stateFiles(for: config)
                 files.append(builder.efiVariablesURL)
-                try FileCloner.clone(files.filter { FileManager.default.fileExists(atPath: $0.path) }, into: overlay)
                 overlayDirectory = overlay
+                try await FileCloner.cloneInBackground(files.filter { FileManager.default.fileExists(atPath: $0.path) }, into: overlay)
                 builder.overlayDirectory = overlay
             }
             if config.qemu.tpm {
@@ -66,6 +68,7 @@ final class QEMUBackend: VMBackend {
             process.arguments = builder.build()
             FileManager.default.createFile(atPath: bundle.logURL.path, contents: nil)
             let log = try FileHandle(forWritingTo: bundle.logURL)
+            logHandle = log
             process.standardOutput = log
             process.standardError = log
             process.terminationHandler = { [weak self] process in
@@ -73,19 +76,26 @@ final class QEMUBackend: VMBackend {
                 Task { @MainActor in self?.processDidExit(status: status) }
             }
             try process.run()
+            launched = process
             self.process = process
 
             let qmp = QMPClient(path: qmpPath)
             qmp.onEvent = { [weak self] event in
                 Task { @MainActor in self?.handle(event: event) }
             }
-            try await qmp.connect()
+            // give up as soon as QEMU exits (bad arguments, locked disk…) instead of waiting out the timeout
+            try await qmp.connect(while: { process.isRunning })
             self.qmp = qmp
             state = .running
         } catch {
-            process?.terminate()
+            let exited = launched.map { !$0.isRunning } ?? false
+            launched?.terminate()
+            let reason = exited ? qemuErrorSummary() : nil
             cleanUp()
             state = .stopped
+            if let reason {
+                throw VMError.invalidConfiguration("QEMU couldn't start this machine:\n\(reason)")
+            }
             throw error
         }
     }
@@ -100,27 +110,41 @@ final class QEMUBackend: VMBackend {
         guard let process else { return }
         isStopping = true
         state = .stopping
+        // don't await: a hung QEMU never answers
         if let qmp {
-            _ = try? await qmp.execute("quit")
+            Task { _ = try? await qmp.execute("quit") }
         }
-        try await Task.sleep(for: .milliseconds(500))
+        for step in 0..<30 where process.isRunning {
+            try? await Task.sleep(for: .milliseconds(100))
+            if step == 15 { process.terminate() }
+        }
         if process.isRunning {
-            process.terminate()
+            kill(process.processIdentifier, SIGKILL)
         }
     }
 
     func pause() async throws {
         guard let qmp, state == .running else { return }
         state = .pausing
-        try await qmp.execute("stop")
-        state = .paused
+        do {
+            try await qmp.execute("stop")
+            state = .paused
+        } catch {
+            state = .running
+            throw error
+        }
     }
 
     func resume() async throws {
         guard let qmp, state == .paused else { return }
         state = .resuming
-        try await qmp.execute("cont")
-        state = .running
+        do {
+            try await qmp.execute("cont")
+            state = .running
+        } catch {
+            state = .paused
+            throw error
+        }
     }
 
     func restart() async throws {
@@ -187,19 +211,32 @@ final class QEMUBackend: VMBackend {
     }
 
     private func processDidExit(status: Int32) {
+        // a failed start reports its own error; after cleanup there is nothing left to do
+        guard process != nil, state != .starting else { return }
         let failed = status != 0 && !isStopping && state == .running
+        let reason = failed ? qemuErrorSummary() : nil
         cleanUp()
         state = .stopped
         if failed {
-            let log = (try? String(contentsOf: bundle.logURL, encoding: .utf8))?.split(separator: "\n").suffix(3).joined(separator: "\n") ?? ""
-            onStateChange?(.stopped, VMError.invalidConfiguration("QEMU exited with status \(status).\n\(log)"))
+            onStateChange?(.stopped, VMError.invalidConfiguration("QEMU stopped unexpectedly (status \(status)).\n\(reason ?? "")"))
         }
+    }
+
+    /// The last lines QEMU printed, which name the actual problem.
+    private func qemuErrorSummary() -> String? {
+        try? logHandle?.synchronize()
+        guard let text = try? String(contentsOf: bundle.logURL, encoding: .utf8) else { return nil }
+        let lines = text.split(separator: "\n").map { $0.replacingOccurrences(of: "qemu-system-aarch64: ", with: "").replacingOccurrences(of: "qemu-system-x86_64: ", with: "") }
+        let summary = lines.suffix(3).joined(separator: "\n")
+        return summary.isEmpty ? nil : summary
     }
 
     private func cleanUp() {
         qmp?.close()
         qmp = nil
         process = nil
+        try? logHandle?.close()
+        logHandle = nil
         tpmProcess?.terminate()
         tpmProcess = nil
         if let overlayDirectory { try? FileManager.default.removeItem(at: overlayDirectory) }

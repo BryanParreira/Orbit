@@ -9,6 +9,8 @@ final class VMLibrary {
 
     private(set) var vms: [VMInstance] = []
     private(set) var rootURL: URL
+    /// Set when the library folder can't be reached (e.g. its external drive is unplugged).
+    private(set) var isRootUnavailable = false
 
     var installersURL: URL { rootURL.appendingPathComponent("Installers", isDirectory: true) }
     var runningCount: Int { vms.filter { $0.state.isActive }.count }
@@ -26,6 +28,12 @@ final class VMLibrary {
         }
         AppleBackend.removeStaleOverlays()
         reload()
+        // a library on an external drive comes back when the drive is reconnected
+        for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification] {
+            NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { VMLibrary.shared.reload() }
+            }
+        }
     }
 
     func vm(with id: UUID) -> VMInstance? {
@@ -34,6 +42,9 @@ final class VMLibrary {
 
     func reload() {
         try? FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        var isDirectory: ObjCBool = false
+        isRootUnavailable = !(FileManager.default.fileExists(atPath: rootURL.path, isDirectory: &isDirectory) && isDirectory.boolValue
+            && FileManager.default.isWritableFile(atPath: rootURL.path))
         let urls = (try? FileManager.default.contentsOfDirectory(at: rootURL, includingPropertiesForKeys: nil)) ?? []
         var loaded: [VMInstance] = []
         for url in urls where url.pathExtension == VMBundle.fileExtension {
@@ -102,7 +113,7 @@ final class VMLibrary {
 
     /// APFS clone of the whole package with a fresh identity: instant, and free until either copy changes.
     @discardableResult
-    func duplicate(_ vm: VMInstance) throws -> VMInstance {
+    func duplicate(_ vm: VMInstance) async throws -> VMInstance {
         vm.saveNow()
         var config = vm.config
         config.id = UUID()
@@ -113,7 +124,7 @@ final class VMLibrary {
         let bundle = try makeBundle(named: config.name)
         let skip: Set<String> = ["config.json", "Snapshots", VMBundle(url: vm.bundle.url).savedStateURL.lastPathComponent]
         for item in try FileManager.default.contentsOfDirectory(atPath: vm.bundle.url.path) where !skip.contains(item) {
-            try FileCloner.clone(vm.bundle.url.appendingPathComponent(item), to: bundle.url.appendingPathComponent(item))
+            try await FileCloner.cloneInBackground(vm.bundle.url.appendingPathComponent(item), to: bundle.url.appendingPathComponent(item))
         }
         try PlatformProvisioner.regenerateIdentity(bundle: bundle, guestOS: config.guestOS)
         return try register(bundle: bundle, config: config)
@@ -131,10 +142,10 @@ final class VMLibrary {
             config.name = uniqueName(config.name)
             let bundle = try makeBundle(named: config.name)
             try FileManager.default.removeItem(at: bundle.url)
-            try FileCloner.clone(url, to: bundle.url)
+            try await FileCloner.cloneInBackground(url, to: bundle.url)
             return try register(bundle: bundle, config: config)
         case "utm":
-            return try UTMImporter.importPackage(at: url, into: self)
+            return try await UTMImporter.importPackage(at: url, into: self)
         default:
             throw VMError.invalidConfiguration("\(url.lastPathComponent) is not a virtual machine package.")
         }

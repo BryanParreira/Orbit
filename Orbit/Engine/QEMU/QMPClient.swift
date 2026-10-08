@@ -17,12 +17,13 @@ final class QMPClient: @unchecked Sendable {
         self.path = path
     }
 
-    /// Connect, retrying while QEMU creates the socket.
-    func connect(timeout: TimeInterval = 10) async throws {
+    /// Connect, retrying while QEMU creates the socket and `alive` stays true.
+    func connect(timeout: TimeInterval = 15, while alive: () -> Bool = { true }) async throws {
         let deadline = Date().addingTimeInterval(timeout)
         while true {
             if try openSocket() { break }
-            if Date() > deadline { throw VMError.invalidConfiguration("QEMU did not open its control socket.") }
+            if !alive() { throw VMError.notRunning }
+            if Date() > deadline { throw VMError.invalidConfiguration("QEMU didn't respond in time. Check Console.log in the machine's package for details.") }
             try await Task.sleep(for: .milliseconds(100))
         }
         let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
