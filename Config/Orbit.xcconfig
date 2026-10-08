@@ -1,0 +1,19 @@
+// Orbit release configuration. scripts/release.sh updates the version lines.
+
+// Shown to users ("0.2.0") and compared by Sparkle (build number must always increase).
+MARKETING_VERSION = 0.1.0
+CURRENT_PROJECT_VERSION = 202610081233
+
+// Developer ID team used for release builds and notarization.
+ORBIT_TEAM_ID = 5PNLAR99PK
+
+// GitHub repository that hosts releases (owner/name).
+ORBIT_GITHUB_REPO = BryanParreira/Orbit
+
+// Sparkle update feed: the appcast attached to the newest GitHub release.
+// "$()" keeps xcconfig from reading "//" as a comment.
+ORBIT_FEED_URL = https:/$()/github.com/$(ORBIT_GITHUB_REPO)/releases/latest/download/appcast.xml
+
+// EdDSA public key for verifying updates. The private key lives in your login Keychain
+// (Sparkle generate_keys, account "orbit"). Back it up: without it you can never ship another update.
+ORBIT_SPARKLE_PUBLIC_KEY = eLSJnmXx7R4g9nSzlFd4wZX7cB0RFb3VEeSVtR6IfhA=
