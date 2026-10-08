@@ -157,6 +157,18 @@ enum DiskImporter {
             }.value
             return name
         }
+        if format == .asif {
+            // only Apple's tools read ASIF; a sparse raw copy works for QEMU as is
+            let name = "\(base).img"
+            let destination = directory.appendingPathComponent(name)
+            do {
+                try await DiskImageService.run(URL(fileURLWithPath: "/usr/sbin/diskutil"), ["image", "create", "from", "--format", "RAW", source.path, destination.path])
+            } catch {
+                try? FileManager.default.removeItem(at: destination)
+                throw error
+            }
+            return name
+        }
         guard let qemuImg = HostInfo.qemuImg(), FileManager.default.isExecutableFile(atPath: qemuImg.path) else {
             throw ImportError.needsQEMU(format)
         }

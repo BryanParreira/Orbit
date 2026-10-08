@@ -43,6 +43,17 @@ enum DiskFormat: String, CaseIterable {
         }
     }
 
+    /// Converting to `engine`'s format needs qemu-img (ASIF converts with Apple's own tools).
+    func needsQEMUImg(for engine: VMEngineKind) -> Bool {
+        !isNative(to: engine) && self != .asif
+    }
+
+    /// Format the disk ends up in for `engine`.
+    func importedFormatName(for engine: VMEngineKind) -> String {
+        if isNative(to: engine) { return displayName }
+        return engine == .apple || self == .asif ? "RAW" : "QCOW2"
+    }
+
     /// Formats each engine reads without conversion.
     func isNative(to engine: VMEngineKind) -> Bool {
         switch engine {
@@ -123,16 +134,27 @@ enum FileInspector {
 
     /// Size of the virtual disk in GiB (not the file size), when it can be told.
     static func virtualSizeGiB(of url: URL, format: DiskFormat) async -> Int {
+        func gib(_ bytes: Int64) -> Int { Int(max(1, (bytes + 1_073_741_823) / 1_073_741_824)) }
         let fileSize = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
-        if format == .raw || format == .asif && HostInfo.qemuImg() == nil {
-            return Int(max(1, (fileSize + 1_073_741_823) / 1_073_741_824))
+        switch format {
+        case .raw:
+            return gib(fileSize)
+        case .asif:
+            // qemu-img doesn't know ASIF and would report the sparse file's size
+            if let output = try? await DiskImageService.run(URL(fileURLWithPath: "/usr/sbin/diskutil"), ["image", "info", "--plist", url.path]),
+               let plist = try? PropertyListSerialization.propertyList(from: Data(output.utf8), format: nil) as? [String: Any],
+               let sizes = plist["Size Info"] as? [String: Any], let bytes = (sizes["Total Bytes"] as? NSNumber)?.int64Value {
+                return gib(bytes)
+            }
+            return gib(fileSize)
+        default:
+            if let qemuImg = HostInfo.qemuImg(), FileManager.default.isExecutableFile(atPath: qemuImg.path),
+               let output = try? await DiskImageService.run(qemuImg, ["info", "--output=json", "-f", format.qemuName, url.path]),
+               let json = try? JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any],
+               let bytes = (json["virtual-size"] as? NSNumber)?.int64Value {
+                return gib(bytes)
+            }
+            return gib(fileSize)
         }
-        if let qemuImg = HostInfo.qemuImg(), FileManager.default.isExecutableFile(atPath: qemuImg.path),
-           let output = try? await DiskImageService.run(qemuImg, ["info", "--output=json", "-f", format.qemuName, url.path]),
-           let json = try? JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any],
-           let bytes = json["virtual-size"] as? Int64 {
-            return Int(max(1, (bytes + 1_073_741_823) / 1_073_741_824))
-        }
-        return Int(max(1, (fileSize + 1_073_741_823) / 1_073_741_824))
     }
 }

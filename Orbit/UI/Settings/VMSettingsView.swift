@@ -12,6 +12,10 @@ struct VMSettingsView: View {
                 Label("Most changes apply the next time the machine starts. Shared folders update live.", systemImage: "info.circle")
                     .font(.callout)
                     .foregroundStyle(.secondary)
+            } else if vm.hasSavedState {
+                Label("This machine is suspended. Changing its hardware means the next start is a fresh boot instead of a resume.", systemImage: "moon")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
             GeneralSection(config: $vm.config)
             SystemSection(config: $vm.config)

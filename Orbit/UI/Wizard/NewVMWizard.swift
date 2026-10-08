@@ -18,8 +18,9 @@ struct NewVMWizard: View {
     var body: some View {
         VStack(spacing: 0) {
             Group {
-                if draft != nil {
-                    ConfigureStep(draft: Binding(get: { draft! }, set: { draft = $0 }))
+                if let current = draft {
+                    // `current` keeps the outgoing step valid while Back animates it away
+                    ConfigureStep(draft: Binding(get: { draft ?? current }, set: { draft = $0 }))
                         .transition(.move(edge: .trailing).combined(with: .opacity))
                 } else {
                     ChooseStep { template in
@@ -319,7 +320,7 @@ private struct ConfigureStep: View {
             draft.existingDisk = url
             draft.existingDiskFormat = format
             if case .download = draft.installer { draft.installer = .none }
-            fileProblem = format.isNative(to: draft.engine) || HostInfo.qemuImg().map({ FileManager.default.isExecutableFile(atPath: $0.path) }) == true
+            fileProblem = !format.needsQEMUImg(for: draft.engine) || HostInfo.qemuImg().map({ FileManager.default.isExecutableFile(atPath: $0.path) }) == true
                 ? nil
                 : "Converting \(format.displayName) needs QEMU's qemu-img. Install QEMU from Settings → Engines first."
         case .iso:
@@ -358,7 +359,7 @@ private struct ConfigureStep: View {
                     Text(disk.lastPathComponent).lineLimit(1).truncationMode(.middle)
                     Text(format.isNative(to: draft.engine)
                          ? "\(format.displayName) · used as is (cloned, your original stays untouched)"
-                         : "\(format.displayName) · converted to \(draft.engine == .apple ? "RAW" : "QCOW2") for \(draft.engine.displayName)")
+                         : "\(format.displayName) · converted to \(format.importedFormatName(for: draft.engine)) for \(draft.engine.displayName)")
                 }
             }
         }
@@ -426,7 +427,7 @@ extension VMDraft {
         guard !name.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
         if guestOS == .macOS, installer == .none { return false }
         if engine == .qemu && !HostInfo.isQEMUInstalled { return false }
-        if let format = existingDiskFormat, !format.isNative(to: engine), HostInfo.qemuImg().map({ FileManager.default.isExecutableFile(atPath: $0.path) }) != true {
+        if let format = existingDiskFormat, format.needsQEMUImg(for: engine), HostInfo.qemuImg().map({ FileManager.default.isExecutableFile(atPath: $0.path) }) != true {
             return false
         }
         return true

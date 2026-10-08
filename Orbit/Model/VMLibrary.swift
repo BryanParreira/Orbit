@@ -92,6 +92,7 @@ final class VMLibrary {
     // MARK: - Managing
 
     func delete(_ vm: VMInstance) async throws {
+        vm.activeDownload?.cancel()
         if vm.state.isActive {
             await vm.forceStop()
         }

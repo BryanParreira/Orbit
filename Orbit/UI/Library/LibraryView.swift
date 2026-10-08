@@ -61,6 +61,7 @@ struct LibraryView: View {
             }
         }
         .onAppear {
+            router.openWindowAction = openWindow
             if router.selection == nil { router.selection = library.vms.first?.id }
             #if DEBUG
             SelfTest.runIfRequested(library: library, openWindow: openWindow)
@@ -103,12 +104,15 @@ enum LibraryDropHandler {
             do {
                 let vm = try await library.importPackage(at: url)
                 router.selection = vm.id
+                router.showLibrary()
             } catch {
                 presentError(error)
             }
         case .ipsw, .iso, .diskImage:
             router.pendingFile = url
             router.pendingTemplateID = nil
+            // the wizard is a sheet on the library window, which may be closed
+            router.showLibrary()
             router.isShowingWizard = true
         case .unsupported(let reason):
             presentError(VMError.invalidConfiguration(reason))

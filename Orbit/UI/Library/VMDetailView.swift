@@ -21,7 +21,9 @@ struct VMDetailView: View {
             .frame(maxWidth: .infinity)
         }
         .scrollEdgeEffectStyle(.soft, for: .top)
-        .navigationTitle("")
+        // the header shows the name; the window keeps it for the Window menu and Mission Control
+        .navigationTitle(vm.config.name)
+        .toolbar(removing: .title)
         .inspector(isPresented: $router.isShowingInspector) {
             VMSettingsView(vm: vm)
                 .inspectorColumnWidth(min: 330, ideal: 370, max: 480)

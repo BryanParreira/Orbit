@@ -43,9 +43,7 @@ struct OrbitApp: App {
                 .environment(router)
                 .tint(Theme.ink)
         } label: {
-            // the app icon's planet and ring; a moon joins the orbit while machines run
-            Image(library.runningCount > 0 ? "MenuBarIconActive" : "MenuBarIcon")
-                .accessibilityLabel(library.runningCount > 0 ? "Orbit, \(library.runningCount) running" : "Orbit")
+            MenuBarLabel(runningCount: library.runningCount)
         }
         .menuBarExtraStyle(.window)
     }
@@ -69,4 +67,26 @@ final class AppRouter {
     /// File (installer or disk) preselected when the wizard opens, e.g. after a drop.
     var pendingFile: URL?
     var pendingTemplateID: String?
+
+    /// Registered by any live view, so non-view code (Finder "Open With", menu bar)
+    /// can bring the library window back after it was closed.
+    @ObservationIgnored var openWindowAction: OpenWindowAction?
+
+    func showLibrary() {
+        openWindowAction?(id: SceneID.library)
+        NSApp.activate()
+    }
+}
+
+/// Menu bar icon; also keeps a window opener available while the library is closed.
+struct MenuBarLabel: View {
+    let runningCount: Int
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        // the app icon's planet and ring; a moon joins the orbit while machines run
+        Image(runningCount > 0 ? "MenuBarIconActive" : "MenuBarIcon")
+            .accessibilityLabel(runningCount > 0 ? "Orbit, \(runningCount) running" : "Orbit")
+            .onAppear { AppRouter.shared.openWindowAction = openWindow }
+    }
 }

@@ -11,6 +11,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        // settings edits are saved after a short debounce; flush any still pending
+        MainActor.assumeIsolated { VMLibrary.shared.vms.forEach { $0.saveNow() } }
+    }
+
     func application(_ application: NSApplication, open urls: [URL]) {
         Task { @MainActor in
             for url in urls {

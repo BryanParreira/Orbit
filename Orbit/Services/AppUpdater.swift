@@ -34,7 +34,13 @@ final class AppUpdater {
     private init() {
         let key = Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") as? String ?? ""
         let feed = Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String ?? ""
+        #if DEBUG
+        // development builds must never replace themselves with a published release
+        isConfigured = false
+        _ = (key, feed)
+        #else
         isConfigured = !key.isEmpty && !key.hasPrefix("REPLACE") && feed.hasPrefix("https://")
+        #endif
         // never start against a missing key: Sparkle would refuse every update anyway
         controller = SPUStandardUpdaterController(startingUpdater: isConfigured, updaterDelegate: nil, userDriverDelegate: nil)
         observation = controller.updater.observe(\.canCheckForUpdates, options: [.initial, .new]) { [weak self] updater, _ in

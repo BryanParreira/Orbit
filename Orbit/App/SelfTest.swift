@@ -108,6 +108,10 @@ enum SelfTest {
             await vm.takeSnapshot(named: "Clean install")
             await vm.captureScreenshot()
             log("PASS demo ready, state=\(vm.state.label) error=\(vm.lastError ?? "-")")
+            for _ in 0..<6 {
+                try? await Task.sleep(for: .seconds(5))
+                log("watch: \(vm.state.label)")
+            }
         } catch {
             log("FAIL \(error.localizedDescription)")
         }

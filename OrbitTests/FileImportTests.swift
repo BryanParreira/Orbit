@@ -161,6 +161,18 @@ struct FileImportTests {
         #expect(await FileInspector.virtualSizeGiB(of: dir.appendingPathComponent(forQEMU), format: .qcow2) == 2)
     }
 
+    @Test func asifReportsItsVirtualSizeAndImportsIntoQEMU() async throws {
+        let name = try await DiskImageService.create(in: dir, id: UUID(), sizeGiB: 3, engine: .apple)
+        let asif = dir.appendingPathComponent(name)
+        // the file itself is a few MB; the disk it describes is 3 GB
+        #expect(await FileInspector.virtualSizeGiB(of: asif, format: .asif) == 3)
+        #expect(!DiskFormat.asif.needsQEMUImg(for: .qemu))
+        let imported = try await DiskImporter.importDisk(asif, format: .asif, into: dir, id: UUID(), engine: .qemu)
+        #expect(imported.hasSuffix(".img"))
+        #expect(FileInspector.inspect(dir.appendingPathComponent(imported)) == .diskImage(.raw))
+        #expect(await FileInspector.virtualSizeGiB(of: dir.appendingPathComponent(imported), format: .raw) == 3)
+    }
+
     @Test func conversionWithoutQEMUExplainsWhatToDo() {
         let error = DiskImporter.ImportError.needsQEMU(.vdi)
         #expect(error.localizedDescription.contains("brew install qemu"))
