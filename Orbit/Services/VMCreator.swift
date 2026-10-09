@@ -93,12 +93,12 @@ enum VMCreator {
         return vm
     }
 
-    /// Download + install phase, runs after the VM is visible in the library.
     /// Windows on ARM ships NVMe drivers but none for virtio-blk.
     private static func diskInterface(for draft: VMDraft) -> DiskInterface {
         draft.guestOS == .windows ? .nvme : .virtio
     }
 
+    /// Download + install phase, runs after the VM is visible in the library.
     private static func finish(_ vm: VMInstance, draft: VMDraft, library: VMLibrary) async {
         do {
             if let source = draft.existingDisk, let format = draft.existingDiskFormat {
@@ -125,8 +125,8 @@ enum VMCreator {
                 vm.config.cpuCount = max(vm.config.cpuCount, minimum.cpus)
                 vm.config.memoryMiB = max(vm.config.memoryMiB, minimum.memoryMiB)
                 vm.saveNow()
-                await vm.installMacOS(from: ipsw)
-                if vm.lastError == nil && draft.startWhenReady {
+                // a cancelled install reports no error, so ask whether it actually finished
+                if await vm.installMacOS(from: ipsw), draft.startWhenReady {
                     await vm.start()
                 }
             } else {

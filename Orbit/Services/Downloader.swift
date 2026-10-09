@@ -36,7 +36,11 @@ final class DownloadTask {
             return destination
         }
         try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let delegate = Delegate()
+        // staged beside the destination (same volume) by the download thread, so finishing is an
+        // instant rename on the main thread even when the library is on another drive
+        let staging = destination.deletingLastPathComponent()
+            .appendingPathComponent(".\(destination.lastPathComponent).\(UUID().uuidString.prefix(8)).download")
+        let delegate = Delegate(staging: staging)
         self.delegate = delegate
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForResource = 60 * 60 * 6
@@ -63,7 +67,7 @@ final class DownloadTask {
             delegate.onFinish = { result in continuation.resume(with: result) }
             session.downloadTask(with: source).resume()
         }
-        // never leave a multi-gigabyte download behind in the temp folder
+        // never leave a multi-gigabyte partial download behind
         defer { try? FileManager.default.removeItem(at: temp) }
         try? FileManager.default.removeItem(at: destination)
         try FileManager.default.moveItem(at: temp, to: destination)
@@ -78,6 +82,11 @@ final class DownloadTask {
     private final class Delegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
         var onProgress: ((Int64, Int64) -> Void)?
         var onFinish: ((Result<URL, Error>) -> Void)?
+        let staging: URL
+
+        init(staging: URL) {
+            self.staging = staging
+        }
 
         func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
             onProgress?(totalBytesWritten, totalBytesExpectedToWrite)
@@ -89,12 +98,14 @@ final class DownloadTask {
                 onFinish = nil
                 return
             }
-            // the system deletes `location` when this returns, keep it alive
-            let keep = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            // the system deletes `location` when this returns; move it onto the destination volume now,
+            // off the main thread (a copy across drives can take a while for multi-gigabyte images)
             do {
-                try FileManager.default.moveItem(at: location, to: keep)
-                onFinish?(.success(keep))
+                try? FileManager.default.removeItem(at: staging)
+                try FileManager.default.moveItem(at: location, to: staging)
+                onFinish?(.success(staging))
             } catch {
+                try? FileManager.default.removeItem(at: staging)
                 onFinish?(.failure(error))
             }
             onFinish = nil

@@ -129,6 +129,14 @@ final class VMInstance: Identifiable {
         }
     }
 
+    /// Stop background work before the machine's files are removed.
+    func prepareForDeletion() {
+        saveTask?.cancel()
+        screenshotTimer?.invalidate()
+        healthTimer?.invalidate()
+        activeDownload?.cancel()
+    }
+
     func discardSavedState() {
         try? FileManager.default.removeItem(at: bundle.savedStateURL)
         refreshFileState()
@@ -141,25 +149,30 @@ final class VMInstance: Identifiable {
         appleBackend?.cancelInstallation()
     }
 
-    func installMacOS(from ipsw: URL) async {
+    /// - Returns: true only when macOS finished installing (not on failure or cancellation).
+    @discardableResult
+    func installMacOS(from ipsw: URL) async -> Bool {
         do {
             try ResourceGuard.checkCanStart(self, library: VMLibrary.shared)
         } catch {
             report(error)
-            return
+            return false
         }
-        guard let backend = makeBackendIfNeeded() as? AppleBackend else { return }
+        guard let backend = makeBackendIfNeeded() as? AppleBackend else { return false }
         installProgress = 0
         installStatus = "Installing macOS…"
+        var installed = false
         await perform {
             try await backend.installMacOS(from: ipsw) { [weak self] fraction in
                 self?.installProgress = fraction
             }
             config.bootFromInstaller = false
+            installed = true
         }
         installProgress = nil
         installStatus = nil
         refreshFileState()
+        return installed
     }
 
     // MARK: - Media
@@ -281,9 +294,11 @@ final class VMInstance: Identifiable {
         isCapturingScreenshot = true
         defer { isCapturingScreenshot = false }
         try? await Task.sleep(for: .milliseconds(80))
-        guard let image = await appleBackend?.screenshot() else { return }
+        guard let full = await appleBackend?.screenshot() else { return }
         // a frame grabbed before the guest redraws (just after resume) is solid black
-        if screenshot != nil && image.isNearlyBlack { return }
+        if screenshot != nil && full.isNearlyBlack { return }
+        // a preview, not a capture: keep it small in memory and on disk
+        let image = full.scaled(maxWidth: 1600)
         screenshot = image
         if let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
            let png = rep.representation(using: .png, properties: [:]) {
@@ -390,6 +405,17 @@ extension VMInstance: Hashable {
 }
 
 private extension NSImage {
+    func scaled(maxWidth: CGFloat) -> NSImage {
+        guard let cg = cgImage(forProposedRect: nil, context: nil, hints: nil), CGFloat(cg.width) > maxWidth else { return self }
+        let height = (CGFloat(cg.height) * maxWidth / CGFloat(cg.width)).rounded()
+        guard let ctx = CGContext(data: nil, width: Int(maxWidth), height: Int(height), bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return self }
+        ctx.interpolationQuality = .high
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: maxWidth, height: height))
+        guard let small = ctx.makeImage() else { return self }
+        return NSImage(cgImage: small, size: size)
+    }
+
     /// True when a coarse sample of the image has no visible content.
     var isNearlyBlack: Bool {
         guard let cg = cgImage(forProposedRect: nil, context: nil, hints: nil) else { return true }

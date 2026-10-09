@@ -87,6 +87,21 @@ struct DeletionTests {
         #expect(!FileManager.default.fileExists(atPath: broken.path))
     }
 
+    @Test func userFilesInTheLibraryFolderAreNeverLeftovers() async throws {
+        // the library can share a folder with someone's documents: those must never be offered for deletion
+        let document = library.rootURL.appendingPathComponent("Tax Return \(UUID().uuidString.prefix(6)).pdf")
+        let folder = library.rootURL.appendingPathComponent("Photos \(UUID().uuidString.prefix(6))", isDirectory: true)
+        try Data("important".utf8).write(to: document)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: document)
+            try? FileManager.default.removeItem(at: folder)
+        }
+        let found = await library.leftovers()
+        #expect(!found.contains { $0.url.standardizedFileURL.path == document.standardizedFileURL.path })
+        #expect(!found.contains { $0.url.standardizedFileURL.path == folder.standardizedFileURL.path })
+    }
+
     @Test func temporaryPatternsAreOrbitsOnly() {
         #expect(VMLibrary.isOrbitTemporary("orbit-disposable-1234"))
         #expect(VMLibrary.isOrbitTemporary("orbit-A1B2C3D4"))

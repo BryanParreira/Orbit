@@ -36,7 +36,8 @@ struct VMBundle: Hashable {
     /// Snapshots and disposable runs clone exactly these.
     func stateFiles(for config: VMConfiguration) -> [URL] {
         var files = config.disks.filter { !$0.isRemovable && !$0.isExternal && !$0.isReadOnly }.map(diskURL(for:))
-        files += [auxiliaryStorageURL, efiVariablesURL, savedStateURL]
+        // firmware, saved memory, and the emulated TPM a Windows guest keeps its keys in
+        files += [auxiliaryStorageURL, efiVariablesURL, savedStateURL, url.appendingPathComponent("TPM")]
         return files.filter { FileManager.default.fileExists(atPath: $0.path) }
     }
 

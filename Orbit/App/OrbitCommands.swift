@@ -3,6 +3,7 @@ import SwiftUI
 struct OrbitCommands: Commands {
     let router: AppRouter
     @FocusedValue(\.selectedVM) private var vm
+    @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
         CommandGroup(after: .appInfo) {
@@ -29,7 +30,8 @@ struct OrbitCommands: Commands {
         CommandMenu("Machine") {
             Button(vm?.state == .paused ? "Resume" : "Start") {
                 guard let vm else { return }
-                Task { vm.state == .paused ? await vm.resume() : await vm.start() }
+                // same as the Start button: boot and show the machine's window
+                Task { await VMActions.startAndShow(vm, openWindow: openWindow) }
             }
             .keyboardShortcut("r")
             .disabled(vm == nil || (vm!.state != .stopped && vm!.state != .paused))

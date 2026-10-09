@@ -48,12 +48,23 @@ final class VMLibrary {
         let urls = (try? FileManager.default.contentsOfDirectory(at: rootURL, includingPropertiesForKeys: nil)) ?? []
         var loaded: [VMInstance] = []
         for url in urls where url.pathExtension == VMBundle.fileExtension {
-            if let existing = vms.first(where: { $0.bundle.url == url }) {
+            // match by location (paths: listed folder URLs end in "/", others don't) and keep the
+            // live instance, so a reload never creates a second copy of a machine
+            if let existing = vms.first(where: { $0.bundle.url.standardizedFileURL.path == url.standardizedFileURL.path }) {
                 loaded.append(existing)
                 continue
             }
             let bundle = VMBundle(url: url)
-            guard let config = try? bundle.loadConfiguration() else { continue }
+            guard var config = try? bundle.loadConfiguration() else { continue }
+            // a package copied in Finder carries the original's identity: give the copy its own, so
+            // the two never collide (same ID, same MAC address, same machine identifier)
+            if vms.contains(where: { $0.id == config.id }) || loaded.contains(where: { $0.id == config.id }) {
+                config.id = UUID()
+                config.network.macAddress = NetworkConfiguration.randomMACAddress()
+                try? PlatformProvisioner.regenerateIdentity(bundle: bundle, guestOS: config.guestOS)
+                try? FileManager.default.removeItem(at: bundle.savedStateURL)
+                try? bundle.save(config)
+            }
             loaded.append(VMInstance(bundle: bundle, config: config))
         }
         // keep running VMs even if their package disappeared
@@ -61,9 +72,15 @@ final class VMLibrary {
         vms = loaded.sorted { $0.config.createdAt < $1.config.createdAt }
     }
 
+    /// Use `url` for the library. A folder that already holds other things (Documents, an external
+    /// drive) gets an "Orbit Virtual Machines" folder inside it rather than having machines mixed
+    /// in with the user's files.
     func moveLibrary(to url: URL) {
-        UserDefaults.standard.set(url.path, forKey: PreferenceKey.libraryPath)
-        rootURL = url
+        let items = ((try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? []).filter { !$0.hasPrefix(".") }
+        let isLibrary = items.allSatisfy { $0 == "Installers" || $0.hasSuffix(".\(VMBundle.fileExtension)") }
+        let target = isLibrary ? url : url.appendingPathComponent("Orbit Virtual Machines", isDirectory: true)
+        UserDefaults.standard.set(target.path, forKey: PreferenceKey.libraryPath)
+        rootURL = target
         vms = vms.filter { $0.state.isActive }
         reload()
     }
@@ -73,7 +90,12 @@ final class VMLibrary {
     /// A fresh, uniquely named package directory.
     func makeBundle(named name: String) throws -> VMBundle {
         try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
-        let safe = name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
+        var safe = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
+        // no hidden or empty package names, and stay well under the file system's name limit
+        while safe.hasPrefix(".") { safe.removeFirst() }
+        if safe.isEmpty { safe = "Virtual Machine" }
+        safe = String(safe.prefix(120))
         var url = rootURL.appendingPathComponent(safe).appendingPathExtension(VMBundle.fileExtension)
         var n = 2
         while FileManager.default.fileExists(atPath: url.path) {
@@ -136,7 +158,7 @@ final class VMLibrary {
     ///   - removeInstaller: Also delete the downloaded installer the plan found.
     func delete(_ vm: VMInstance, permanently: Bool = true, removeInstaller: Bool = true) async throws {
         let plan = await deletionPlan(for: vm)
-        vm.activeDownload?.cancel()
+        vm.prepareForDeletion()
         if vm.state.isActive {
             await vm.forceStop()
         }
@@ -182,18 +204,22 @@ final class VMLibrary {
         let fm = FileManager.default
         var found: [Leftover] = []
         let known = Set(vms.map { $0.bundle.url.standardizedFileURL.path })
-        for item in (try? fm.contentsOfDirectory(at: rootURL, includingPropertiesForKeys: nil)) ?? [] {
-            let name = item.lastPathComponent
-            if name == "Installers" || name.hasPrefix(".") || known.contains(item.standardizedFileURL.path) { continue }
-            if item.pathExtension == VMBundle.fileExtension, fm.fileExists(atPath: item.appendingPathComponent("config.json").path) { continue }
-            let reason = item.pathExtension == VMBundle.fileExtension
-                ? "An unfinished machine (it has no settings file), for example from an interrupted import."
-                : "A file that isn't part of any machine."
-            found.append(Leftover(url: item, bytes: await Self.allocatedSize(of: item), reason: reason))
+        // Only Orbit's own kinds of files are ever candidates: the library may share a folder with
+        // the user's documents, and nothing that isn't recognizably Orbit's may be offered for deletion.
+        for item in (try? fm.contentsOfDirectory(at: rootURL, includingPropertiesForKeys: nil)) ?? []
+        where item.pathExtension == VMBundle.fileExtension && !known.contains(item.standardizedFileURL.path) {
+            if fm.fileExists(atPath: item.appendingPathComponent("config.json").path) { continue }
+            found.append(Leftover(url: item, bytes: await Self.allocatedSize(of: item),
+                                  reason: "An unfinished machine (it has no settings file), for example from an interrupted import."))
         }
         for installer in unusedInstallers() {
             found.append(Leftover(url: installer, bytes: DiskImageService.allocatedBytes(at: installer),
                                   reason: "A downloaded installer no machine uses. It downloads again if you need it."))
+        }
+        for partial in (try? fm.contentsOfDirectory(at: installersURL, includingPropertiesForKeys: nil)) ?? []
+        where partial.lastPathComponent.hasPrefix(".") && partial.pathExtension == "download" && activeDownloads == 0 {
+            found.append(Leftover(url: partial, bytes: DiskImageService.allocatedBytes(at: partial),
+                                  reason: "A download that was interrupted before it finished."))
         }
         for marker in (try? fm.contentsOfDirectory(at: installersURL, includingPropertiesForKeys: nil)) ?? []
         where marker.lastPathComponent.hasPrefix(".") && marker.pathExtension == "verified" {
@@ -213,6 +239,8 @@ final class VMLibrary {
         }
         return found
     }
+
+    private var activeDownloads: Int { vms.filter { $0.activeDownload != nil }.count }
 
     nonisolated static func isOrbitTemporary(_ name: String) -> Bool {
         name.hasPrefix("orbit-disposable-")

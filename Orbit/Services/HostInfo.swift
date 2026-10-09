@@ -84,8 +84,10 @@ enum HostInfo {
     // MARK: Storage
 
     static func freeSpaceBytes(at url: URL) -> Int64? {
-        let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-        return values?.volumeAvailableCapacityForImportantUsage
+        let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey])
+        // "important usage" isn't reported by every volume (many external drives); fall back to plain free space
+        if let important = values?.volumeAvailableCapacityForImportantUsage, important > 0 { return important }
+        return values?.volumeAvailableCapacity.map(Int64.init)
     }
 
     static func supportsCloning(at url: URL) -> Bool {
