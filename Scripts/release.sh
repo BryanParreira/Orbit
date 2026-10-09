@@ -139,16 +139,21 @@ notarize() {
         [[ -n "$id" ]] && xcrun notarytool log "$id" --keychain-profile "$NOTARY_PROFILE" || echo "$result"
         die "Notarization rejected $(basename "$file")"
     fi
-    xcrun stapler staple -q "$file"
-    ok "notarized and stapled $(basename "$file")"
+    ok "Apple accepted $(basename "$file")"
+}
+
+# attach the notarization ticket so the file opens without a network check
+staple() {
+    xcrun stapler staple "$1" > "$OUT/staple.log" 2>&1 || { cat "$OUT/staple.log"; die "Stapling $(basename "$1") failed"; }
+    ok "ticket stapled to $(basename "$1")"
 }
 
 if [[ $NOTARIZE == 1 ]]; then
     step "Notarize app"
     ditto -c -k --keepParent "$APP" "$OUT/Orbit-notarize.zip"
     notarize "$OUT/Orbit-notarize.zip"
-    # the ticket is stapled to the app itself, so it opens offline too
-    xcrun stapler staple -q "$APP"
+    # a zip can't carry a ticket; the app itself does, so it opens offline too
+    staple "$APP"
     rm "$OUT/Orbit-notarize.zip"
 fi
 
@@ -178,6 +183,7 @@ ok "$(basename "$DMG") ($(du -h "$DMG" | cut -f1 | xargs))"
 if [[ $NOTARIZE == 1 ]]; then
     step "Notarize disk image"
     notarize "$DMG"
+    staple "$DMG"
     GATEKEEPER="$(spctl -a -t open --context context:primary-signature -v "$DMG" 2>&1 || true)"
     [[ "$GATEKEEPER" == *accepted* ]] && ok "Gatekeeper accepts the DMG" || die "Gatekeeper rejects the DMG: $GATEKEEPER"
 fi
@@ -237,7 +243,8 @@ if [[ $PUBLISH == 1 ]]; then
     [[ -n "$NOTES" ]] && NOTES_ARGS=(--notes-file "$NOTES")
     DRAFT_ARGS=()
     [[ $DRAFT == 1 ]] && DRAFT_ARGS=(--draft)
-    gh release create "$TAG" --repo "$REPO" --title "Orbit $VERSION" "${NOTES_ARGS[@]}" "${DRAFT_ARGS[@]}" \
+    # ${a[@]+"${a[@]}"}: macOS's bash 3.2 calls an empty array unbound under set -u
+    gh release create "$TAG" --repo "$REPO" --title "Orbit $VERSION" "${NOTES_ARGS[@]}" ${DRAFT_ARGS[@]+"${DRAFT_ARGS[@]}"} \
         "$DMG" "$OUT/appcast.xml"
     ok "https://github.com/$REPO/releases/tag/$TAG"
     [[ $DRAFT == 1 ]] && echo "  ${dim}Draft releases are invisible to the updater until you publish them.${reset}"

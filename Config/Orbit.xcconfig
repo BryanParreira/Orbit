@@ -2,7 +2,7 @@
 
 // Shown to users ("0.2.0") and compared by Sparkle (build number must always increase).
 MARKETING_VERSION = 0.1.0
-CURRENT_PROJECT_VERSION = 202610081233
+CURRENT_PROJECT_VERSION = 202610091043
 
 // Developer ID team used for release builds and notarization.
 ORBIT_TEAM_ID = 5PNLAR99PK
