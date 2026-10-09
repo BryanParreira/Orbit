@@ -84,6 +84,8 @@ final class AppRouter {
     /// File (installer or disk) preselected when the wizard opens, e.g. after a drop.
     var pendingFile: URL?
     var pendingTemplateID: String?
+    /// Machine whose delete sheet is showing.
+    var deleting: VMInstance?
 
     /// Registered by any live view, so non-view code (Finder "Open With", menu bar)
     /// can bring the library window back after it was closed.

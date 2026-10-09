@@ -52,13 +52,15 @@ private struct GeneralPreferences: View {
     }
 }
 
-/// Everything Orbit keeps on this Mac, in plain view, with sizes.
+/// Everything Orbit keeps on this Mac, in plain view, with sizes, and anything it left behind.
 private struct StoragePreferences: View {
     @Environment(VMLibrary.self) private var library
     @State private var machinesBytes: Int64?
     @State private var installerBytes: Int64?
-    @State private var unusedCount = 0
+    @State private var leftovers: [VMLibrary.Leftover]?
     @State private var confirmClean = false
+
+    private var leftoverBytes: Int64 { leftovers?.reduce(0) { $0 + $1.bytes } ?? 0 }
 
     var body: some View {
         Form {
@@ -68,11 +70,7 @@ private struct StoragePreferences: View {
                         .foregroundStyle(.secondary)
                 }
                 LabeledContent("Downloaded installers") {
-                    HStack {
-                        Text(installerBytes?.formattedBytes ?? "Calculating…").foregroundStyle(.secondary)
-                        Button("Remove Unused…") { confirmClean = true }
-                            .disabled(unusedCount == 0)
-                    }
+                    Text(installerBytes?.formattedBytes ?? "Calculating…").foregroundStyle(.secondary)
                 }
                 HStack {
                     Spacer()
@@ -81,35 +79,67 @@ private struct StoragePreferences: View {
             } header: {
                 Text("On this Mac")
             } footer: {
-                Text("Disks only use space for what guests have written. Installers are kept so the next machine starts faster; removed ones download again when needed.")
+                Text("Disks only use space for what guests have written. Installers are kept so the next machine starts faster.")
             }
+
+            Section {
+                if let leftovers {
+                    if leftovers.isEmpty {
+                        Label("Nothing to clean up.", systemImage: "checkmark.circle")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(leftovers) { item in
+                            LabeledContent {
+                                Text(item.bytes.formattedBytes).monospacedDigit().foregroundStyle(.secondary)
+                            } label: {
+                                Text(item.url.lastPathComponent).lineLimit(1).truncationMode(.middle)
+                                Text(item.reason)
+                            }
+                        }
+                        HStack {
+                            Text("\(leftovers.count) item\(leftovers.count == 1 ? "" : "s") · \(leftoverBytes.formattedBytes)")
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button("Clean Up…") { confirmClean = true }
+                        }
+                    }
+                } else {
+                    HStack { ProgressView().controlSize(.small); Text("Looking for leftovers…").foregroundStyle(.secondary) }
+                }
+            } header: {
+                Text("Clean up")
+            } footer: {
+                Text("Only Orbit's own leftovers are listed: unused downloads, unfinished imports and temporary files from machines that didn't stop cleanly. Working machines are never touched.")
+            }
+
             Section("What Orbit stores") {
                 StorageRow(symbol: "folder", title: "Library", detail: library.rootURL.path(percentEncoded: false))
                 StorageRow(symbol: "gearshape", title: "Settings", detail: "~/Library/Preferences/com.orbitvm.Orbit.plist")
                 StorageRow(symbol: "clock.arrow.circlepath", title: "Update cache", detail: "~/Library/Caches/com.orbitvm.Orbit")
                 StorageRow(symbol: "hourglass", title: "While running", detail: "Temporary files in your private temp folder, removed when machines stop")
-                Text("Orbit never partitions or formats your Mac's disks, installs no background services or system extensions, and never asks for an administrator password. Each virtual disk is an ordinary file inside its machine's package.")
+                Text("Orbit never partitions or formats your Mac's disks, installs no background services or system extensions, and never asks for an administrator password. Each virtual disk is an ordinary file inside its machine's package. Deleting a machine removes all of it.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
         .task { await refresh() }
-        .confirmationDialog("Remove \(unusedCount) unused installer\(unusedCount == 1 ? "" : "s")?", isPresented: $confirmClean) {
-            Button("Remove", role: .destructive) {
-                library.removeUnusedInstallers()
+        .confirmationDialog("Remove \(leftovers?.count ?? 0) leftover item\((leftovers?.count ?? 0) == 1 ? "" : "s")?", isPresented: $confirmClean) {
+            Button("Remove \(leftoverBytes.formattedBytes)", role: .destructive) {
+                library.remove(leftovers ?? [])
                 Task { await refresh() }
             }
         } message: {
-            Text("Installers attached to a machine are kept.")
+            Text("They're deleted permanently. Downloads come back automatically if a new machine needs them.")
         }
     }
 
     private func refresh() async {
-        unusedCount = library.unusedInstallers().count
+        leftovers = nil
         installerBytes = await VMLibrary.allocatedSize(of: library.installersURL)
         let total = await VMLibrary.allocatedSize(of: library.rootURL)
         machinesBytes = max(0, total - (installerBytes ?? 0))
+        leftovers = await library.leftovers()
     }
 }
 

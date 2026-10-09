@@ -102,13 +102,127 @@ final class VMLibrary {
 
     // MARK: - Managing
 
-    func delete(_ vm: VMInstance) async throws {
+    /// What deleting a machine removes, so the user can see it before confirming.
+    struct DeletionPlan {
+        /// Disks, snapshots, saved memory, firmware, screenshots: the whole package.
+        let packageBytes: Int64
+        /// An installer Orbit downloaded for this machine that no other machine uses.
+        let installer: URL?
+        let installerBytes: Int64
+
+        var totalBytes: Int64 { packageBytes + installerBytes }
+    }
+
+    func deletionPlan(for vm: VMInstance) async -> DeletionPlan {
+        let package = await Self.allocatedSize(of: vm.bundle.url)
+        var installer: URL?
+        var installerBytes: Int64 = 0
+        // only installers Orbit itself downloaded; an image the user brought is theirs to keep
+        if let path = vm.config.installerMedia?.path {
+            let url = URL(fileURLWithPath: path)
+            let usedElsewhere = vms.contains { $0 != vm && $0.config.installerMedia?.path == path }
+            if url.deletingLastPathComponent().standardizedFileURL.path == installersURL.standardizedFileURL.path, !usedElsewhere,
+               FileManager.default.fileExists(atPath: url.path) {
+                installer = url
+                installerBytes = DiskImageService.allocatedBytes(at: url)
+            }
+        }
+        return DeletionPlan(packageBytes: package, installer: installer, installerBytes: installerBytes)
+    }
+
+    /// Remove a machine and everything it left on this Mac.
+    /// - Parameters:
+    ///   - permanently: Free the space now; otherwise the package goes to the Trash, which keeps using space until emptied.
+    ///   - removeInstaller: Also delete the downloaded installer the plan found.
+    func delete(_ vm: VMInstance, permanently: Bool = true, removeInstaller: Bool = true) async throws {
+        let plan = await deletionPlan(for: vm)
         vm.activeDownload?.cancel()
         if vm.state.isActive {
             await vm.forceStop()
         }
-        try FileManager.default.trashItem(at: vm.bundle.url, resultingItemURL: nil)
+        if permanently {
+            try FileManager.default.removeItem(at: vm.bundle.url)
+        } else {
+            try FileManager.default.trashItem(at: vm.bundle.url, resultingItemURL: nil)
+        }
+        if removeInstaller, let installer = plan.installer {
+            try? FileManager.default.removeItem(at: installer)
+            try? FileManager.default.removeItem(at: Self.verificationMarker(for: installer))
+        }
+        removeTemporaryFiles(of: vm)
         vms.removeAll { $0 == vm }
+    }
+
+    /// Per-machine temporary files: QEMU's control folder, and throwaway clones once nothing runs.
+    private func removeTemporaryFiles(of vm: VMInstance) {
+        let temp = FileManager.default.temporaryDirectory
+        try? FileManager.default.removeItem(at: temp.appendingPathComponent("orbit-\(vm.id.uuidString.prefix(8))"))
+        if !vms.contains(where: { $0 != vm && $0.state.isActive }) {
+            AppleBackend.removeStaleOverlays()
+        }
+    }
+
+    nonisolated static func verificationMarker(for installer: URL) -> URL {
+        installer.deletingLastPathComponent().appendingPathComponent(".\(installer.lastPathComponent).verified")
+    }
+
+    // MARK: - Leftovers
+
+    struct Leftover: Identifiable {
+        let id = UUID()
+        let url: URL
+        let bytes: Int64
+        /// Plain-language explanation of what it is.
+        let reason: String
+    }
+
+    /// Files in Orbit's folders that belong to no machine: crashed runs, half-finished imports,
+    /// unused downloads. Never anything outside Orbit's own folders, never a working machine.
+    func leftovers() async -> [Leftover] {
+        let fm = FileManager.default
+        var found: [Leftover] = []
+        let known = Set(vms.map { $0.bundle.url.standardizedFileURL.path })
+        for item in (try? fm.contentsOfDirectory(at: rootURL, includingPropertiesForKeys: nil)) ?? [] {
+            let name = item.lastPathComponent
+            if name == "Installers" || name.hasPrefix(".") || known.contains(item.standardizedFileURL.path) { continue }
+            if item.pathExtension == VMBundle.fileExtension, fm.fileExists(atPath: item.appendingPathComponent("config.json").path) { continue }
+            let reason = item.pathExtension == VMBundle.fileExtension
+                ? "An unfinished machine (it has no settings file), for example from an interrupted import."
+                : "A file that isn't part of any machine."
+            found.append(Leftover(url: item, bytes: await Self.allocatedSize(of: item), reason: reason))
+        }
+        for installer in unusedInstallers() {
+            found.append(Leftover(url: installer, bytes: DiskImageService.allocatedBytes(at: installer),
+                                  reason: "A downloaded installer no machine uses. It downloads again if you need it."))
+        }
+        for marker in (try? fm.contentsOfDirectory(at: installersURL, includingPropertiesForKeys: nil)) ?? []
+        where marker.lastPathComponent.hasPrefix(".") && marker.pathExtension == "verified" {
+            let image = installersURL.appendingPathComponent(String(marker.deletingPathExtension().lastPathComponent.dropFirst()))
+            if !fm.fileExists(atPath: image.path) {
+                found.append(Leftover(url: marker, bytes: DiskImageService.allocatedBytes(at: marker), reason: "A checksum record for a download that's gone."))
+            }
+        }
+        if !vms.contains(where: { $0.state.isActive }) {
+            let temp = fm.temporaryDirectory
+            // only Orbit's own patterns: throwaway clones and per-machine control folders
+            for item in (try? fm.contentsOfDirectory(at: temp, includingPropertiesForKeys: nil)) ?? []
+            where Self.isOrbitTemporary(item.lastPathComponent) {
+                found.append(Leftover(url: item, bytes: await Self.allocatedSize(of: item),
+                                      reason: "Temporary files from a machine that didn't stop cleanly."))
+            }
+        }
+        return found
+    }
+
+    nonisolated static func isOrbitTemporary(_ name: String) -> Bool {
+        name.hasPrefix("orbit-disposable-")
+            || name.wholeMatch(of: /orbit-[0-9A-F]{8}/) != nil
+    }
+
+    func remove(_ leftovers: [Leftover]) {
+        for item in leftovers {
+            try? FileManager.default.removeItem(at: item.url)
+        }
     }
 
     /// APFS clone of the whole package with a fresh identity: instant, and free until either copy changes.
@@ -192,8 +306,7 @@ final class VMLibrary {
     func removeUnusedInstallers() {
         for file in unusedInstallers() {
             try? FileManager.default.removeItem(at: file)
-            let marker = file.deletingLastPathComponent().appendingPathComponent(".\(file.lastPathComponent).verified")
-            try? FileManager.default.removeItem(at: marker)
+            try? FileManager.default.removeItem(at: Self.verificationMarker(for: file))
         }
     }
 

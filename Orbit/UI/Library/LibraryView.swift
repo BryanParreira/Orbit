@@ -52,6 +52,11 @@ struct LibraryView: View {
                     router.pendingTemplateID = nil
                 }
         }
+        .sheet(item: $router.deleting) { vm in
+            DeleteMachineSheet(vm: vm)
+                .environment(library)
+                .tint(Theme.ink)
+        }
         .fileImporter(isPresented: $router.isShowingImporter,
                       allowedContentTypes: LibraryDropHandler.importTypes,
                       allowsMultipleSelection: true) { result in
@@ -108,7 +113,7 @@ enum LibraryDropHandler {
         let router = AppRouter.shared
         switch FileInspector.inspect(url) {
         case .orbitPackage, .utmPackage:
-            if let existing = library.vms.first(where: { $0.bundle.url.standardizedFileURL == url.standardizedFileURL }) {
+            if let existing = library.vms.first(where: { $0.bundle.url.standardizedFileURL.path == url.standardizedFileURL.path }) {
                 router.selection = existing.id
                 return
             }

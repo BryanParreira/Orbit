@@ -42,6 +42,12 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        // ⌘⌫ / Delete opens the delete sheet for the selected machine
+        .onDeleteCommand {
+            if let id = router.selection, let vm = library.vm(with: id) {
+                VMActions.confirmDelete(vm, library: library)
+            }
+        }
         .contextMenu(forSelectionType: UUID.self) { ids in
             if let id = ids.first, let vm = library.vm(with: id) {
                 VMActionsMenu(vm: vm)

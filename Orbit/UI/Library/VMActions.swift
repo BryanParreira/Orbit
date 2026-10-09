@@ -18,24 +18,10 @@ enum VMActions {
         }
     }
 
+    /// Opens the delete sheet, which shows what will be removed before anything happens.
     static func confirmDelete(_ vm: VMInstance, library: VMLibrary) {
-        let alert = NSAlert()
-        alert.messageText = "Move “\(vm.config.name)” to the Trash?"
-        alert.informativeText = "Its disks, snapshots and saved state go with it. You can restore it from the Trash."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Move to Trash").hasDestructiveAction = true
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        Task {
-            do {
-                try await library.delete(vm)
-                if AppRouter.shared.selection == vm.id {
-                    AppRouter.shared.selection = AppRouter.galleryID
-                }
-            } catch {
-                vm.report(error)
-            }
-        }
+        AppRouter.shared.showLibrary()
+        AppRouter.shared.deleting = vm
     }
 
     static func duplicate(_ vm: VMInstance, library: VMLibrary) {
@@ -98,7 +84,7 @@ struct VMActionsMenu: View {
                 .disabled(vm.state.isActive)
             Button("Show in Finder", systemImage: "folder") { library.revealInFinder(vm) }
             Divider()
-            Button("Move to Trash…", systemImage: "trash", role: .destructive) { VMActions.confirmDelete(vm, library: library) }
+            Button("Delete…", systemImage: "trash", role: .destructive) { VMActions.confirmDelete(vm, library: library) }
                 .disabled(vm.state == .installing)
         }
     }
