@@ -270,6 +270,10 @@ If you installed QEMU through Orbit, remove it with `brew uninstall qemu swtpm`.
 
 **Text in a Linux machine is tiny.** Settings → Display → **Text size** → *Large*. It applies immediately.
 
+**A machine won't start because of memory.** Orbit keeps at least 3 GB for macOS. Shut down another machine, or choose a smaller *Performance* preset in the machine's settings.
+
+**A machine paused itself and says the disk is almost full.** Orbit pauses machines when less than 1 GB is free, so the guest can't fill the disk macOS needs. Free up space (Settings → Storage → Remove Unused shows downloaded installers you can delete), then resume.
+
 **"macOS allows at most two macOS virtual machines to run at the same time."** That's a limit macOS sets. Shut one down, then start the other.
 
 **The machine boots back into the installer.** Shut it down and click **Eject** on the *Installer attached* banner.

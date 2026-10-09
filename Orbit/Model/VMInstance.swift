@@ -34,6 +34,7 @@ final class VMInstance: Identifiable {
     @ObservationIgnored private(set) var backend: VMBackend?
     @ObservationIgnored private var saveTask: Task<Void, Never>?
     @ObservationIgnored private var screenshotTimer: Timer?
+    @ObservationIgnored private var healthTimer: Timer?
 
     nonisolated let id: UUID
 
@@ -56,6 +57,8 @@ final class VMInstance: Identifiable {
 
     func start(options: StartOptions = []) async {
         await perform {
+            guard state == .stopped else { return }
+            try ResourceGuard.checkCanStart(self, library: VMLibrary.shared)
             let backend = makeBackendIfNeeded()
             isDisposableRun = options.contains(.disposable)
             try await backend.start(options: options)
@@ -63,6 +66,7 @@ final class VMInstance: Identifiable {
             startedAt = Date()
             refreshFileState()
             startScreenshotTimer()
+            startHealthTimer()
         }
     }
 
@@ -138,6 +142,12 @@ final class VMInstance: Identifiable {
     }
 
     func installMacOS(from ipsw: URL) async {
+        do {
+            try ResourceGuard.checkCanStart(self, library: VMLibrary.shared)
+        } catch {
+            report(error)
+            return
+        }
         guard let backend = makeBackendIfNeeded() as? AppleBackend else { return }
         installProgress = 0
         installStatus = "Installing macOS…"
@@ -281,6 +291,19 @@ final class VMInstance: Identifiable {
         }
     }
 
+    /// Pauses the machine before the host disk fills up, which would hurt macOS and could corrupt
+    /// the guest's disk.
+    private func startHealthTimer() {
+        healthTimer?.invalidate()
+        healthTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.state == .running, let free = ResourceGuard.lowDiskSpace(for: self) else { return }
+                await self.pause()
+                self.lastError = "“\(self.config.name)” was paused because only \(free.formattedBytes) is left on its disk. Free up space, then resume it."
+            }
+        }
+    }
+
     private func startScreenshotTimer() {
         screenshotTimer?.invalidate()
         guard hasEmbeddedDisplay else { return }
@@ -334,6 +357,7 @@ final class VMInstance: Identifiable {
                 self.startedAt = nil
                 self.isDisposableRun = false
                 self.screenshotTimer?.invalidate()
+                self.healthTimer?.invalidate()
                 self.refreshFileState()
             }
             if let error {

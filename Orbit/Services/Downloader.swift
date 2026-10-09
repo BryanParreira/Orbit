@@ -63,6 +63,8 @@ final class DownloadTask {
             delegate.onFinish = { result in continuation.resume(with: result) }
             session.downloadTask(with: source).resume()
         }
+        // never leave a multi-gigabyte download behind in the temp folder
+        defer { try? FileManager.default.removeItem(at: temp) }
         try? FileManager.default.removeItem(at: destination)
         try FileManager.default.moveItem(at: temp, to: destination)
         isFinished = true

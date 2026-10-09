@@ -4,12 +4,17 @@ import Testing
 
 /// Files users bring from elsewhere: detection by content, routing and conversion.
 @Suite(.serialized)
-struct FileImportTests {
+final class FileImportTests {
     let dir: URL
 
     init() throws {
         dir = FileManager.default.temporaryDirectory.appendingPathComponent("orbit-tests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    }
+
+    // a class suite gets a fresh instance per test and tears it down after, so nothing is left behind
+    deinit {
+        try? FileManager.default.removeItem(at: dir)
     }
 
     // MARK: Helpers
@@ -21,8 +26,14 @@ struct FileImportTests {
         p.arguments = args
         p.standardOutput = FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice
+        // a semaphore instead of waitUntilExit(), which can hang off the main run loop
+        let done = DispatchSemaphore(value: 0)
+        p.terminationHandler = { _ in done.signal() }
         try p.run()
-        p.waitUntilExit()
+        guard done.wait(timeout: .now() + 120) == .success else {
+            p.terminate()
+            return -1
+        }
         return p.terminationStatus
     }
 

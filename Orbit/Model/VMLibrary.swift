@@ -122,12 +122,18 @@ final class VMLibrary {
         config.createdAt = Date()
         config.lastRunAt = nil
         let bundle = try makeBundle(named: config.name)
-        let skip: Set<String> = ["config.json", "Snapshots", VMBundle(url: vm.bundle.url).savedStateURL.lastPathComponent]
-        for item in try FileManager.default.contentsOfDirectory(atPath: vm.bundle.url.path) where !skip.contains(item) {
-            try await FileCloner.cloneInBackground(vm.bundle.url.appendingPathComponent(item), to: bundle.url.appendingPathComponent(item))
+        do {
+            let skip: Set<String> = ["config.json", "Snapshots", VMBundle(url: vm.bundle.url).savedStateURL.lastPathComponent]
+            for item in try FileManager.default.contentsOfDirectory(atPath: vm.bundle.url.path) where !skip.contains(item) {
+                try await FileCloner.cloneInBackground(vm.bundle.url.appendingPathComponent(item), to: bundle.url.appendingPathComponent(item))
+            }
+            try PlatformProvisioner.regenerateIdentity(bundle: bundle, guestOS: config.guestOS)
+            return try register(bundle: bundle, config: config)
+        } catch {
+            // a half-made copy is worse than none
+            try? FileManager.default.removeItem(at: bundle.url)
+            throw error
         }
-        try PlatformProvisioner.regenerateIdentity(bundle: bundle, guestOS: config.guestOS)
-        return try register(bundle: bundle, config: config)
     }
 
     /// Import an `.orbitvm` or a UTM `.utm` package (cloned, original untouched).
@@ -142,9 +148,14 @@ final class VMLibrary {
             }
             config.name = uniqueName(config.name)
             let bundle = try makeBundle(named: config.name)
-            try FileManager.default.removeItem(at: bundle.url)
-            try await FileCloner.cloneInBackground(url, to: bundle.url)
-            return try register(bundle: bundle, config: config)
+            do {
+                try FileManager.default.removeItem(at: bundle.url)
+                try await FileCloner.cloneInBackground(url, to: bundle.url)
+                return try register(bundle: bundle, config: config)
+            } catch {
+                try? FileManager.default.removeItem(at: bundle.url)
+                throw error
+            }
         case "utm":
             return try await UTMImporter.importPackage(at: url, into: self)
         default:

@@ -115,6 +115,7 @@ Existing machines can take an extra disk or a new installer from their settings.
 - **No account, no analytics, no tracking.** Orbit goes online only to download systems you ask for and to check for its own updates.
 - **Nothing installed on your system.** No helpers, login items or extensions, no administrator password, and it never partitions or formats your Mac's disks. Settings → Storage shows everything Orbit keeps, with sizes.
 - **Guests get only what you give them.** Clipboard sharing and the microphone are off by default; shared folders can be read-only.
+- **Your Mac comes first.** Machines can't take the memory macOS needs, and they pause themselves before the disk fills up.
 - **Untrusted machines stay contained.** Packages from elsewhere can't reach files outside themselves and start without shared folders.
 
 Read the full [security model](SECURITY.md).

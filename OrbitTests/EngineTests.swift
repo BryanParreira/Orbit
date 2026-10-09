@@ -106,15 +106,19 @@ struct QEMULaunchTests {
         let process = Process()
         process.executableURL = binary
         process.arguments = args
-        let errors = Pipe()
-        process.standardError = errors
+        // stderr to a file, never a pipe: a full pipe would block QEMU
+        let log = dir.appendingPathComponent("qemu.log")
+        FileManager.default.createFile(atPath: log.path, contents: nil)
+        process.standardError = try FileHandle(forWritingTo: log)
         process.standardOutput = FileHandle.nullDevice
         try process.run()
         try await Task.sleep(for: .seconds(3))
         let alive = process.isRunning
+        // no waitUntilExit(): it can miss the exit on a concurrency thread and hang
         if alive { process.terminate() }
-        process.waitUntilExit()
-        let message = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        for _ in 0..<50 where process.isRunning { try await Task.sleep(for: .milliseconds(100)) }
+        if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        let message = (try? String(contentsOf: log, encoding: .utf8)) ?? ""
         #expect(alive, "QEMU rejected the \(scenario.name) machine: \(message)")
     }
 }
@@ -278,5 +282,29 @@ struct PackageSafetyTests {
         let args = QEMUArgumentBuilder(config: config, bundle: VMBundle(url: dir), qmpSocket: "/tmp/q", dataDirectory: URL(fileURLWithPath: "/share")).build()
         let drive = args.first { $0.contains("disk.img") } ?? ""
         #expect(drive.contains("a,,readonly=off,,b"), "commas in paths must be doubled: \(drive)")
+    }
+}
+
+@MainActor
+struct ResourceGuardTests {
+    private func machine(memory: Int) -> VMInstance {
+        var config = VMConfiguration(name: "Guarded", engine: .apple, guestOS: .linux, cpuCount: 2, memoryMiB: memory)
+        config.disks = []
+        return VMInstance(bundle: VMBundle(url: FileManager.default.temporaryDirectory), config: config)
+    }
+
+    @Test func refusesMemoryThatWouldStarveMacOS() {
+        let greedy = machine(memory: HostInfo.memoryMiB) // all of the Mac's memory
+        #expect(throws: VMError.self) { try ResourceGuard.checkCanStart(greedy, library: VMLibrary.shared) }
+    }
+
+    @Test func allowsTheRecommendedSize() throws {
+        let normal = machine(memory: HostInfo.recommendedMemoryMiB(for: .linux))
+        try ResourceGuard.checkCanStart(normal, library: VMLibrary.shared)
+    }
+
+    @Test func maximumPresetFitsTheBudget() {
+        // the settings' Maximum must never be something the guard then refuses on its own
+        #expect(HostInfo.maxMemoryMiB <= HostInfo.memoryMiB - ResourceGuard.memoryReserveMiB)
     }
 }

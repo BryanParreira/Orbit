@@ -26,6 +26,12 @@ Please report security problems privately through [GitHub Security Advisories](h
 - Every image is verified against the SHA-256 checksum the project publishes. Verification fails closed: an image that doesn't match is deleted, and an image whose checksum can't be fetched isn't used.
 - macOS restore images come from Apple's catalog and are verified by macOS during installation.
 
+### Protecting your Mac
+
+- **Memory budget.** A machine won't start if the running machines plus this one would leave macOS less than 3 GB of memory, so guests can't push the Mac into heavy swapping.
+- **Disk space.** A machine won't start with less than 3 GB free, and a running machine is paused automatically if free space drops below 1 GB, before a guest can fill the disk macOS needs.
+- **Clean failures.** Interrupted downloads, imports and copies are removed rather than left half-written. Temporary files used while machines run are deleted when they stop, and leftovers from a crash are cleaned up the next time Orbit opens.
+
 ### Virtual machines
 
 - Guests run in Apple's Virtualization framework (each in its own sandboxed process) or in QEMU, a separate process.
