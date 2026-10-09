@@ -74,8 +74,10 @@ enum SceneID {
 @MainActor
 final class AppRouter {
     static let shared = AppRouter()
+    /// Sidebar selection for the "All Machines" gallery.
+    static let galleryID = UUID(uuidString: "00000000-0000-0000-0000-00000000A11A")!
 
-    var selection: UUID?
+    var selection: UUID? = AppRouter.galleryID
     var isShowingWizard = false
     var isShowingImporter = false
     var isShowingInspector = false

@@ -6,11 +6,34 @@ struct MenuBarView: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Orbit").font(.headline)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Image("MenuBarIcon")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 24)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Orbit").font(.headline)
+                    Text(library.runningCount == 0 ? "No machines running" : "\(library.runningCount) running")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
-                Text("\(library.runningCount) running").font(.caption).foregroundStyle(.secondary)
+            }
+            if library.runningCount > 0 {
+                let used = library.vms.filter { $0.state.isActive }.reduce(0) { $0 + $1.config.memoryMiB }
+                VStack(alignment: .leading, spacing: 4) {
+                    Capsule().fill(Color.primary.opacity(0.08)).frame(height: 3)
+                        .overlay(alignment: .leading) {
+                            GeometryReader { geo in
+                                Capsule().fill(Color.primary.opacity(0.55))
+                                    .frame(width: max(3, geo.size.width * min(1, Double(used) / Double(max(1, HostInfo.memoryMiB)))))
+                            }
+                        }
+                    Text("\(used.formattedMemory) of \(HostInfo.memoryMiB.formattedMemory) memory in use")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
             if library.vms.isEmpty {
                 Text("No virtual machines yet.")
@@ -45,9 +68,25 @@ private struct MenuBarRow: View {
     @Environment(\.openWindow) private var openWindow
     @State private var hovering = false
 
+    /// The machine's last frame, so you can tell machines apart at a glance.
+    private var thumbnail: some View {
+        ZStack {
+            Color.black
+            if let image = vm.screenshot {
+                Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
+                    .opacity(vm.state == .running ? 1 : 0.5)
+            } else {
+                OSArtwork(config: vm.config, size: 22).environment(\.colorScheme, .dark)
+            }
+        }
+        .frame(width: 56, height: 35)
+        .clipShape(.rect(cornerRadius: 6, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Color.primary.opacity(0.1)))
+    }
+
     var body: some View {
         HStack(spacing: 10) {
-            OSArtwork(config: vm.config, size: 28)
+            thumbnail
             VStack(alignment: .leading, spacing: 1) {
                 Text(vm.config.name).lineLimit(1)
                 HStack(spacing: 4) {

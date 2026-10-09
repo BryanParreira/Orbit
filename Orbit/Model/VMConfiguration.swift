@@ -198,13 +198,19 @@ enum DisplayScaling: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    /// Guest pixels per Mac point on a 2× screen.
-    var pixelsPerPoint: CGFloat {
+    /// How much larger than 1:1 Retina pixels the guest is drawn.
+    var magnification: CGFloat {
         switch self {
-        case .sharp: 2
-        case .balanced: 4.0 / 3.0
-        case .large: 1
+        case .sharp: 1
+        case .balanced: 1.5
+        case .large: 2
         }
+    }
+
+    /// Guest pixels per Mac point on a screen with `backingScale` (2 on Retina, 1 on most external
+    /// monitors). Never below 1:1, so a non-Retina screen isn't made blurry.
+    func pixelsPerPoint(backingScale: CGFloat) -> CGFloat {
+        max(1, backingScale / magnification)
     }
 }
 

@@ -95,11 +95,12 @@ When the machine starts for the first time it boots from the installer. Follow t
 
 ## Using a machine
 
+- **All Machines:** Orbit opens on a gallery of every machine with a live preview. Hover a card for start, pause, suspend and shut-down buttons; double-click it to start and open the machine; click it for its details page.
 - **Start:** click **Start** (or double-click the machine in the sidebar). A suspended machine shows **Resume** and comes back exactly where you left it.
 - **The machine window:** click inside to type into the guest. Use the toolbar to pause, restart, shut down, take a snapshot or share a folder.
 - **Full screen:** use the green button or **⌃⌘F**.
 - **System shortcuts:** with the ⌘ button in the toolbar turned on, shortcuts like ⌘Tab and ⌘Space go to the guest instead of macOS.
-- **Text size (Linux):** if text looks too small or too large, open the machine's settings (**⌘I**) → Display → **Text size**. *Large* matches macOS and is the default. *Sharp* gives the full Retina resolution.
+- **Text size (Linux):** if text looks too small or too large, use the **Aa** button in the machine window's toolbar, or the machine's settings (**⌘I**) → Display → **Text size**. It changes immediately. *Large* matches macOS and is the default. *Sharp* gives the full Retina resolution.
 - **Menu bar:** the planet icon in the menu bar shows every machine and lets you start, pause or stop them without opening the library. A moon appears on the ring while machines are running.
 
 Closing a machine's window doesn't stop it. It keeps running in the background, and you can reopen it from the library or the menu bar.

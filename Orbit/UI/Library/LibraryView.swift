@@ -13,7 +13,9 @@ struct LibraryView: View {
             SidebarView()
                 .navigationSplitViewColumnWidth(min: 230, ideal: 260, max: 340)
         } detail: {
-            if let id = router.selection, let vm = library.vm(with: id) {
+            if !library.vms.isEmpty && !library.isRootUnavailable && (router.selection == nil || router.selection == AppRouter.galleryID) {
+                GalleryView()
+            } else if let id = router.selection, let vm = library.vm(with: id) {
                 VMDetailView(vm: vm)
                     .id(vm.id)
                     .focusedSceneValue(\.selectedVM, vm)
@@ -71,7 +73,7 @@ struct LibraryView: View {
         }
         .onAppear {
             router.openWindowAction = openWindow
-            if router.selection == nil { router.selection = library.vms.first?.id }
+            if router.selection == nil { router.selection = AppRouter.galleryID }
             #if DEBUG
             SelfTest.runIfRequested(library: library, openWindow: openWindow)
             #endif

@@ -30,7 +30,7 @@ enum VMActions {
             do {
                 try await library.delete(vm)
                 if AppRouter.shared.selection == vm.id {
-                    AppRouter.shared.selection = library.vms.first?.id
+                    AppRouter.shared.selection = AppRouter.galleryID
                 }
             } catch {
                 vm.report(error)

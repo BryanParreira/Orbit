@@ -16,6 +16,20 @@ struct SidebarView: View {
         let running = filtered.filter { $0.state.isActive }
         let idle = filtered.filter { !$0.state.isActive }
         List(selection: $router.selection) {
+            if search.isEmpty {
+                Label {
+                    HStack {
+                        Text("All Machines")
+                        Spacer()
+                        Text("\(library.vms.count)")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    Image(systemName: "square.grid.2x2")
+                }
+                .tag(AppRouter.galleryID)
+            }
             if !running.isEmpty {
                 Section("Running") {
                     ForEach(running) { vm in SidebarRow(vm: vm).tag(vm.id) }

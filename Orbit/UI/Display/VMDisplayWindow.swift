@@ -80,6 +80,23 @@ struct VMDisplayWindow: View {
             .disabled(vm.state != .running || !vm.canSuspend || vm.isDisposableRun)
             Button { isPickingFolder = true } label: { Label("Share Folder", systemImage: "folder.badge.plus") }
                 .help("Share a Mac folder with the guest (live)")
+            if vm.config.guestOS != .macOS && vm.config.display.dynamicResolution {
+                Menu {
+                    Picker("Text Size", selection: Binding(get: { vm.config.display.effectiveScaling }, set: { vm.config.display.scaling = $0 })) {
+                        ForEach(DisplayScaling.allCases) { Text($0.displayName).tag($0) }
+                    }
+                    .pickerStyle(.inline)
+                } label: {
+                    Label("Text Size", systemImage: "textformat.size")
+                }
+                .help("How large the guest looks: Sharp, Medium or Large")
+            }
+            Button {
+                NSApp.keyWindow?.toggleFullScreen(nil)
+            } label: {
+                Label("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right")
+            }
+            .help("Full screen (⌃⌘F)")
             Toggle(isOn: $captureSystemKeys) {
                 Label("Capture System Keys", systemImage: captureSystemKeys ? "command.circle.fill" : "command.circle")
             }
@@ -172,33 +189,43 @@ struct VirtualMachineDisplay: NSViewRepresentable {
 
     private func configure(_ view: VZVirtualMachineView, coordinator: Coordinator) {
         view.capturesSystemKeys = capturesSystemKeys
-        let managed = automaticallyReconfiguresDisplay && !isMacGuest && scaling != .sharp
-        // VZ's own resizing uses full Retina pixels; for larger text Orbit sizes the display itself
+        // macOS guests scale themselves; for others Orbit sizes the display so text size is a choice
+        let managed = automaticallyReconfiguresDisplay && !isMacGuest
         view.automaticallyReconfiguresDisplay = automaticallyReconfiguresDisplay && !managed
-        coordinator.pixelsPerPoint = managed ? scaling.pixelsPerPoint : nil
+        coordinator.scaling = managed ? scaling : nil
         coordinator.resize(view)
         backend.displayView = view
     }
 
     @MainActor
     final class Coordinator {
-        var pixelsPerPoint: CGFloat?
+        var scaling: DisplayScaling?
         private var pending: DispatchWorkItem?
         private var lastSize: CGSize = .zero
-        private var observer: NSObjectProtocol?
+        private var observers: [NSObjectProtocol] = []
 
         func observe(_ view: VZVirtualMachineView) {
-            observer = NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: view, queue: .main) { [weak self, weak view] _ in
+            let center = NotificationCenter.default
+            observers.append(center.addObserver(forName: NSView.frameDidChangeNotification, object: view, queue: .main) { [weak self, weak view] _ in
                 MainActor.assumeIsolated {
                     guard let self, let view else { return }
                     self.resize(view)
                 }
-            }
+            })
+            // moving the window between a Retina screen and an external monitor changes its pixel density
+            observers.append(center.addObserver(forName: NSWindow.didChangeBackingPropertiesNotification, object: nil, queue: .main) { [weak self, weak view] note in
+                MainActor.assumeIsolated {
+                    guard let self, let view, (note.object as? NSWindow) === view.window else { return }
+                    self.lastSize = .zero
+                    self.resize(view)
+                }
+            })
         }
 
         /// Debounced: live window resizing would otherwise reconfigure the guest dozens of times a second.
         func resize(_ view: VZVirtualMachineView) {
-            guard let pixelsPerPoint, view.bounds.width > 100, view.bounds.height > 100 else { return }
+            guard let scaling, view.bounds.width > 100, view.bounds.height > 100 else { return }
+            let pixelsPerPoint = scaling.pixelsPerPoint(backingScale: view.window?.backingScaleFactor ?? 2)
             // even sizes, and never below what installers expect
             let width = max(1024, (view.bounds.width * pixelsPerPoint / 2).rounded() * 2)
             let height = max(640, (view.bounds.height * pixelsPerPoint / 2).rounded() * 2)
@@ -219,7 +246,7 @@ struct VirtualMachineDisplay: NSViewRepresentable {
         }
 
         deinit {
-            if let observer { NotificationCenter.default.removeObserver(observer) }
+            observers.forEach(NotificationCenter.default.removeObserver)
         }
     }
 }

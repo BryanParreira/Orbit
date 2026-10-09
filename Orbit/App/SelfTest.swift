@@ -13,7 +13,10 @@ enum SelfTest {
     static func runIfRequested(library: VMLibrary, openWindow: OpenWindowAction) {
         if let name = UserDefaults.standard.string(forKey: "OrbitStartVM"), let vm = library.vms.first(where: { $0.config.name == name }) {
             AppRouter.shared.selection = vm.id
-            Task { await VMActions.startAndShow(vm, openWindow: openWindow) }
+            Task {
+                await VMActions.startAndShow(vm, openWindow: openWindow)
+                if UserDefaults.standard.bool(forKey: "OrbitShowGallery") { AppRouter.shared.selection = AppRouter.galleryID }
+            }
         }
         if let name = UserDefaults.standard.string(forKey: "OrbitShowInspector"), let vm = library.vms.first(where: { $0.config.name == name }) {
             AppRouter.shared.selection = vm.id
