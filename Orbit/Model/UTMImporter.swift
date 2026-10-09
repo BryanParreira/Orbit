@@ -39,7 +39,7 @@ enum UTMImporter {
         do {
             // Drives
             for drive in root["Drive"] as? [[String: Any]] ?? [] {
-                guard let imageName = drive["ImageName"] as? String else { continue }
+                guard let imageName = drive["ImageName"] as? String, PackageValidator.isContainedName(imageName) else { continue }
                 let source = dataDir.appendingPathComponent(imageName)
                 guard FileManager.default.fileExists(atPath: source.path) else { continue }
                 let isCD = (drive["ImageType"] as? String) == "CD" || (drive["External"] as? Bool) == true
@@ -98,12 +98,13 @@ enum UTMImporter {
             }
             try model.write(to: bundle.hardwareModelURL)
             try identifier.write(to: bundle.machineIdentifierURL)
+            guard PackageValidator.isContainedName(aux) else { throw VMError.invalidConfiguration("The UTM package refers to a file outside itself.") }
             try FileCloner.clone(dataDir.appendingPathComponent(aux), to: bundle.auxiliaryStorageURL)
         } else {
             if let generic = system["GenericPlatform"] as? [String: Any], let identifier = generic["machineIdentifier"] as? Data {
                 try identifier.write(to: bundle.genericMachineIdentifierURL)
             }
-            if let efi = boot["EfiVariableStoragePath"] as? String {
+            if let efi = boot["EfiVariableStoragePath"] as? String, PackageValidator.isContainedName(efi) {
                 try FileCloner.clone(dataDir.appendingPathComponent(efi), to: bundle.efiVariablesURL)
             } else {
                 try PlatformProvisioner.provisionGeneric(bundle: bundle)
@@ -119,6 +120,6 @@ enum UTMImporter {
         config.audioOutput = virtualization["Audio"] as? Bool ?? true
         config.audioInput = virtualization["AudioInput"] as? Bool ?? false
         config.rosetta = virtualization["Rosetta"] as? Bool ?? false
-        config.clipboardSharing = virtualization["ClipboardSharing"] as? Bool ?? true
+        config.clipboardSharing = virtualization["ClipboardSharing"] as? Bool ?? false
     }
 }

@@ -40,9 +40,12 @@ struct VMBundle: Hashable {
         return files.filter { FileManager.default.fileExists(atPath: $0.path) }
     }
 
+    /// Load and sanitize: a disk can never point outside this package.
     func loadConfiguration() throws -> VMConfiguration {
         let data = try Data(contentsOf: configURL)
-        return try JSONDecoder.orbit.decode(VMConfiguration.self, from: data)
+        var config = try JSONDecoder.orbit.decode(VMConfiguration.self, from: data)
+        PackageValidator.sanitize(&config, imported: false)
+        return config
     }
 
     func save(_ config: VMConfiguration) throws {

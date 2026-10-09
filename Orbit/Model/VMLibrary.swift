@@ -136,6 +136,7 @@ final class VMLibrary {
         switch url.pathExtension.lowercased() {
         case VMBundle.fileExtension:
             var config = try VMBundle(url: url).loadConfiguration()
+            PackageValidator.sanitize(&config, imported: true)
             if vms.contains(where: { $0.id == config.id }) {
                 config.id = UUID()
             }
@@ -148,6 +149,40 @@ final class VMLibrary {
             return try await UTMImporter.importPackage(at: url, into: self)
         default:
             throw VMError.invalidConfiguration("\(url.lastPathComponent) is not a virtual machine package.")
+        }
+    }
+
+    // MARK: - Storage
+
+    /// Bytes actually used on disk under `url` (sparse-aware), computed off the main thread.
+    nonisolated static func allocatedSize(of url: URL) async -> Int64 {
+        await Task.detached(priority: .utility) { allocatedSizeNow(of: url) }.value
+    }
+
+    nonisolated private static func allocatedSizeNow(of url: URL) -> Int64 {
+        let keys: [URLResourceKey] = [.totalFileAllocatedSizeKey, .isRegularFileKey]
+        guard let items = FileManager.default.enumerator(at: url, includingPropertiesForKeys: keys) else { return 0 }
+        var total: Int64 = 0
+        for case let item as URL in items {
+            let values = try? item.resourceValues(forKeys: Set(keys))
+            if values?.isRegularFile == true { total += Int64(values?.totalFileAllocatedSize ?? 0) }
+        }
+        return total
+    }
+
+    /// Installer images no machine has attached.
+    func unusedInstallers() -> [URL] {
+        let attached = Set(vms.compactMap { $0.config.installerMedia?.path })
+        let files = (try? FileManager.default.contentsOfDirectory(at: installersURL, includingPropertiesForKeys: nil)) ?? []
+        return files.filter { !$0.lastPathComponent.hasPrefix(".") && !attached.contains($0.path) }
+    }
+
+    /// Delete downloaded installers that no machine uses; they download again when needed.
+    func removeUnusedInstallers() {
+        for file in unusedInstallers() {
+            try? FileManager.default.removeItem(at: file)
+            let marker = file.deletingLastPathComponent().appendingPathComponent(".\(file.lastPathComponent).verified")
+            try? FileManager.default.removeItem(at: marker)
         }
     }
 

@@ -25,10 +25,16 @@ struct WelcomeView: View {
                 }
                 .frame(maxWidth: 820)
 
-                HStack(spacing: 6) {
-                    QuietLink("Import a UTM or Orbit machine…") { router.isShowingImporter = true }
-                    Text("or drop an ISO anywhere in this window.")
-                        .foregroundStyle(.secondary)
+                VStack(spacing: 8) {
+                    HStack(spacing: 6) {
+                        QuietLink("Import a UTM or Orbit machine…") { router.isShowingImporter = true }
+                        Text("or drop an ISO anywhere in this window.")
+                            .foregroundStyle(.secondary)
+                    }
+                    HStack(spacing: 6) {
+                        Text("New to virtual machines?").foregroundStyle(.secondary)
+                        QuietLink("Read the guide") { NSWorkspace.shared.open(HelpLinks.guide) }
+                    }
                 }
                 .font(.callout)
             }

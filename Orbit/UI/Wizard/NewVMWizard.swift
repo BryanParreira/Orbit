@@ -33,7 +33,8 @@ struct NewVMWizard: View {
             Divider()
             footer
         }
-        .frame(width: 780, height: 640)
+        .frame(width: 780)
+        .frame(minHeight: 520, idealHeight: 640, maxHeight: 640)
         .onAppear(perform: applyInitialState)
         .alert("Could not create the virtual machine", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("OK", role: .cancel) {}
@@ -261,6 +262,10 @@ private struct ConfigureStep: View {
                         Text("Run Intel Linux binaries at near-native speed.")
                     }
                     .disabled(HostInfo.rosettaAvailability == .notSupported)
+                    Toggle(isOn: $draft.clipboardSharing) {
+                        Text("Share clipboard")
+                        Text("Copy and paste between Mac and guest. The guest can then read anything you copy.")
+                    }
                 }
                 LabeledContent("Shared folder") {
                     HStack {

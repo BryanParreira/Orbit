@@ -171,12 +171,53 @@ struct NetworkConfiguration: Codable, Hashable {
     }
 }
 
+/// How large a Linux guest's text and controls appear on a Retina screen.
+enum DisplayScaling: String, Codable, CaseIterable, Identifiable {
+    /// Full Retina resolution: sharpest, but tiny unless scaling is raised inside the guest.
+    case sharp
+    /// 150%: a middle ground.
+    case balanced
+    /// 200%: the guest sees the window's size in points, so text matches macOS.
+    case large
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .sharp: "Sharp (Retina)"
+        case .balanced: "Medium"
+        case .large: "Large"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .sharp: "Full resolution. Text is small unless you raise scaling inside the guest."
+        case .balanced: "Between Sharp and Large."
+        case .large: "Recommended. Text and controls match the size of macOS."
+        }
+    }
+
+    /// Guest pixels per Mac point on a 2× screen.
+    var pixelsPerPoint: CGFloat {
+        switch self {
+        case .sharp: 2
+        case .balanced: 4.0 / 3.0
+        case .large: 1
+        }
+    }
+}
+
 struct DisplayConfiguration: Codable, Hashable {
     var widthPixels = 2560
     var heightPixels = 1600
     var pixelsPerInch = 220
     /// Resize the guest display to match the window (macOS 14+ guests, Linux with virtio-gpu).
     var dynamicResolution = true
+    /// Optional so configurations saved before it existed still load; nil means Large.
+    var scaling: DisplayScaling?
+
+    var effectiveScaling: DisplayScaling { scaling ?? .large }
 }
 
 struct SharedFolder: Codable, Identifiable, Hashable {
@@ -220,7 +261,8 @@ struct VMConfiguration: Codable, Identifiable, Hashable {
 
     var audioOutput = true
     var audioInput = false
-    var clipboardSharing = true
+    /// Off by default: with it on, a guest can read anything copied on this Mac.
+    var clipboardSharing = false
     var rosetta = false
     var nestedVirtualization = false
     var diskPerformance: DiskPerformance = .balanced

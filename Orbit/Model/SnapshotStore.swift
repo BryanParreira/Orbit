@@ -62,6 +62,10 @@ enum SnapshotStore {
         let dir = directory(for: snapshot, in: bundle)
         // RAM from after the snapshot would not match its disks
         try? FileManager.default.removeItem(at: bundle.savedStateURL)
+        // a manifest is data: never let it name a file outside the package
+        guard snapshot.files.allSatisfy(PackageValidator.isContainedName) else {
+            throw VMError.invalidConfiguration("This snapshot is damaged and can't be restored.")
+        }
         for name in snapshot.files {
             let source = dir.appendingPathComponent(name)
             guard FileManager.default.fileExists(atPath: source.path) else {

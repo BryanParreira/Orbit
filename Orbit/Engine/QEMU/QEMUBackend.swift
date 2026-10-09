@@ -42,10 +42,14 @@ final class QEMUBackend: VMBackend {
         isStopping = false
         var launched: Process?
         do {
-            // sun_path is limited to 104 bytes, so sockets live in a short temp directory
-            let sockets = URL(fileURLWithPath: "/tmp/orbit-\(config.id.uuidString.prefix(8))")
+            // control sockets live in this user's private temp folder, readable by nobody else
+            // (sun_path is limited to 104 bytes, so the name stays short)
+            let sockets = FileManager.default.temporaryDirectory.appendingPathComponent("orbit-\(config.id.uuidString.prefix(8))", isDirectory: true)
             try? FileManager.default.removeItem(at: sockets)
-            try FileManager.default.createDirectory(at: sockets, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: sockets, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            guard sockets.path.utf8.count < 90 else {
+                throw VMError.invalidConfiguration("The temporary folder path is too long for QEMU's control socket.")
+            }
             socketDirectory = sockets
             let qmpPath = sockets.appendingPathComponent("qmp").path
 

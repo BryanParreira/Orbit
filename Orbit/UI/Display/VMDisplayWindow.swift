@@ -13,7 +13,9 @@ struct VMDisplayWindow: View {
             if let backend = vm.appleBackend, let machine = backend.virtualMachine, vm.state != .stopped {
                 VirtualMachineDisplay(machine: machine, backend: backend,
                                       capturesSystemKeys: captureSystemKeys,
-                                      automaticallyReconfiguresDisplay: vm.config.display.dynamicResolution)
+                                      automaticallyReconfiguresDisplay: vm.config.display.dynamicResolution,
+                                      scaling: vm.config.display.effectiveScaling,
+                                      isMacGuest: vm.config.guestOS == .macOS)
             } else {
                 StoppedOverlay(vm: vm)
             }
@@ -138,16 +140,25 @@ private struct PausedOverlay: View {
 }
 
 /// Hosts Apple's `VZVirtualMachineView`, which renders the guest with Metal and forwards input.
+///
+/// macOS guests handle Retina themselves. For other guests Orbit sizes the guest display from
+/// the window and the chosen text size, so a Linux desktop isn't rendered at half size.
 struct VirtualMachineDisplay: NSViewRepresentable {
     let machine: VZVirtualMachine
     let backend: AppleBackend
     var capturesSystemKeys: Bool
     var automaticallyReconfiguresDisplay: Bool
+    var scaling: DisplayScaling = .sharp
+    var isMacGuest = true
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> VZVirtualMachineView {
         let view = VZVirtualMachineView()
         view.virtualMachine = machine
-        configure(view)
+        view.postsFrameChangedNotifications = true
+        context.coordinator.observe(view)
+        configure(view, coordinator: context.coordinator)
         DispatchQueue.main.async { view.window?.makeFirstResponder(view) }
         return view
     }
@@ -156,12 +167,59 @@ struct VirtualMachineDisplay: NSViewRepresentable {
         if view.virtualMachine !== machine {
             view.virtualMachine = machine
         }
-        configure(view)
+        configure(view, coordinator: context.coordinator)
     }
 
-    private func configure(_ view: VZVirtualMachineView) {
+    private func configure(_ view: VZVirtualMachineView, coordinator: Coordinator) {
         view.capturesSystemKeys = capturesSystemKeys
-        view.automaticallyReconfiguresDisplay = automaticallyReconfiguresDisplay
+        let managed = automaticallyReconfiguresDisplay && !isMacGuest && scaling != .sharp
+        // VZ's own resizing uses full Retina pixels; for larger text Orbit sizes the display itself
+        view.automaticallyReconfiguresDisplay = automaticallyReconfiguresDisplay && !managed
+        coordinator.pixelsPerPoint = managed ? scaling.pixelsPerPoint : nil
+        coordinator.resize(view)
         backend.displayView = view
+    }
+
+    @MainActor
+    final class Coordinator {
+        var pixelsPerPoint: CGFloat?
+        private var pending: DispatchWorkItem?
+        private var lastSize: CGSize = .zero
+        private var observer: NSObjectProtocol?
+
+        func observe(_ view: VZVirtualMachineView) {
+            observer = NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: view, queue: .main) { [weak self, weak view] _ in
+                MainActor.assumeIsolated {
+                    guard let self, let view else { return }
+                    self.resize(view)
+                }
+            }
+        }
+
+        /// Debounced: live window resizing would otherwise reconfigure the guest dozens of times a second.
+        func resize(_ view: VZVirtualMachineView) {
+            guard let pixelsPerPoint, view.bounds.width > 100, view.bounds.height > 100 else { return }
+            // even sizes, and never below what installers expect
+            let width = max(1024, (view.bounds.width * pixelsPerPoint / 2).rounded() * 2)
+            let height = max(640, (view.bounds.height * pixelsPerPoint / 2).rounded() * 2)
+            let target = CGSize(width: width, height: height)
+            guard target != lastSize else { return }
+            pending?.cancel()
+            let work = DispatchWorkItem { [weak self, weak view] in
+                MainActor.assumeIsolated {
+                    guard let self, let display = view?.virtualMachine?.graphicsDevices.first?.displays.first,
+                          view?.virtualMachine?.state == .running else { return }
+                    if (try? display.reconfigure(sizeInPixels: target)) != nil {
+                        self.lastSize = target
+                    }
+                }
+            }
+            pending = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
+        }
+
+        deinit {
+            if let observer { NotificationCenter.default.removeObserver(observer) }
+        }
     }
 }

@@ -38,8 +38,8 @@ struct QEMUArgumentBuilder {
         args += ["-m", "\(config.memoryMiB)"]
 
         // UEFI firmware
-        args += ["-drive", "if=pflash,format=raw,unit=0,readonly=on,file=\(firmwareCodeURL().path)"]
-        args += ["-drive", "if=pflash,format=raw,unit=1,file=\(resolve(efiVariablesURL).path)"]
+        args += ["-drive", "if=pflash,format=raw,unit=0,readonly=on,file=\(q(firmwareCodeURL().path))"]
+        args += ["-drive", "if=pflash,format=raw,unit=1,file=\(q(resolve(efiVariablesURL).path))"]
 
         // Display: QEMU's native Cocoa window with HiDPI scaling
         args += ["-display", "cocoa,zoom-to-fit=on,zoom-interpolation=on,show-cursor=on"]
@@ -66,7 +66,7 @@ struct QEMUArgumentBuilder {
             let id = "drive\(index)"
             index += 1
             if disk.isRemovable {
-                args += ["-drive", "if=none,id=\(id),media=cdrom,readonly=on,file=\(url.path)"]
+                args += ["-drive", "if=none,id=\(id),media=cdrom,readonly=on,file=\(q(url.path))"]
                 let boot = config.bootFromInstaller ? ",bootindex=0" : ""
                 if isArm {
                     args += ["-device", "usb-storage,bus=xhci.0,drive=\(id),removable=on\(boot)"]
@@ -77,7 +77,7 @@ struct QEMUArgumentBuilder {
             }
             let format = url.pathExtension == "qcow2" ? "qcow2" : "raw"
             let ro = disk.isReadOnly ? ",readonly=on" : ""
-            args += ["-drive", "if=none,id=\(id),format=\(format),file=\(url.path),cache=\(cache),discard=unmap,detect-zeroes=unmap\(ro)"]
+            args += ["-drive", "if=none,id=\(id),format=\(format),file=\(q(url.path)),cache=\(cache),discard=unmap,detect-zeroes=unmap\(ro)"]
             let boot = ",bootindex=\(index)"
             switch disk.interface {
             case .nvme: args += ["-device", "nvme,drive=\(id),serial=orbit\(index)\(boot)"]
@@ -108,21 +108,27 @@ struct QEMUArgumentBuilder {
         // Shared folders over 9p
         for (i, folder) in config.sharedFolders.enumerated() where FileManager.default.fileExists(atPath: folder.path) {
             let ro = folder.isReadOnly ? ",readonly=on" : ""
-            args += ["-virtfs", "local,path=\(folder.path),mount_tag=share\(i == 0 ? "" : "\(i)"),security_model=mapped-xattr,id=fs\(i)\(ro)"]
+            args += ["-virtfs", "local,path=\(q(folder.path)),mount_tag=share\(i == 0 ? "" : "\(i)"),security_model=mapped-xattr,id=fs\(i)\(ro)"]
         }
 
         // TPM 2.0 (Windows 11)
         if let tpmSocket {
-            args += ["-chardev", "socket,id=chrtpm,path=\(tpmSocket)", "-tpmdev", "emulator,id=tpm0,chardev=chrtpm"]
+            args += ["-chardev", "socket,id=chrtpm,path=\(q(tpmSocket))", "-tpmdev", "emulator,id=tpm0,chardev=chrtpm"]
             args += ["-device", isArm ? "tpm-tis-device,tpmdev=tpm0" : "tpm-tis,tpmdev=tpm0"]
         }
 
         // Control channel
-        args += ["-qmp", "unix:\(qmpSocket),server=on,wait=off"]
+        args += ["-qmp", "unix:\(q(qmpSocket)),server=on,wait=off"]
         args += ["-monitor", "none", "-serial", "none"]
 
         args += config.qemu.extraArguments
         return args
+    }
+
+    /// QEMU splits option values on commas; a literal comma is written twice. Without this a
+    /// file named "x,readonly=off" would inject options.
+    private func q(_ value: String) -> String {
+        value.replacingOccurrences(of: ",", with: ",,")
     }
 
     private func resolve(_ url: URL) -> URL {

@@ -16,6 +16,11 @@ struct OrbitApp: App {
                 .frame(minWidth: 900, minHeight: 580)
         }
         .defaultSize(width: 1180, height: 760)
+        .defaultWindowPlacement { _, context in
+            // fit smaller screens instead of opening larger than them
+            let screen = context.defaultDisplay.visibleRect.size
+            return WindowPlacement(size: CGSize(width: min(1180, screen.width * 0.9), height: min(760, screen.height * 0.9)))
+        }
         .defaultLaunchBehavior(.presented)
         .commands { OrbitCommands(router: router) }
 
@@ -31,6 +36,13 @@ struct OrbitApp: App {
             }
         }
         .defaultSize(width: 1280, height: 820)
+        .defaultWindowPlacement { _, context in
+            // a VM window sized to the screen it opens on: large, 16:10, never bigger than the screen
+            let screen = context.defaultDisplay.visibleRect.size
+            let width = min(1600, screen.width * 0.85)
+            let height = min(screen.height * 0.85, width / 1.6 + 52)
+            return WindowPlacement(size: CGSize(width: width, height: height))
+        }
         .windowToolbarStyle(.unifiedCompact)
         .restorationBehavior(.disabled)
 

@@ -8,14 +8,8 @@ struct VMSettingsView: View {
     var body: some View {
         @Bindable var vm = vm
         Form {
-            if vm.state.isActive {
-                Label("Most changes apply the next time the machine starts. Shared folders update live.", systemImage: "info.circle")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            } else if vm.hasSavedState {
-                Label("This machine is suspended. Changing its hardware means the next start is a fresh boot instead of a resume.", systemImage: "moon")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+            Section {
+                SummaryHeader(vm: vm)
             }
             GeneralSection(config: $vm.config)
             SystemSection(config: $vm.config)
@@ -26,6 +20,40 @@ struct VMSettingsView: View {
             AdvancedSection(config: $vm.config)
         }
         .formStyle(.grouped)
+    }
+}
+
+/// Who this machine is, at a glance, and whether edits apply now or on next start.
+private struct SummaryHeader: View {
+    let vm: VMInstance
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                OSArtwork(config: vm.config, size: 40)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(vm.config.name).font(.headline).lineLimit(1)
+                    Text("\(vm.config.guestOS.displayName) · \(vm.config.engine == .apple ? "Native" : "QEMU") · \(vm.config.specLine)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            if vm.state.isActive {
+                Label("Changes apply the next time the machine starts. Shared folders and text size update right away.", systemImage: "clock.arrow.circlepath")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if vm.hasSavedState {
+                Label("Suspended. Changing processor, memory or storage makes the next start a fresh boot.", systemImage: "moon")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Label("Changes save automatically.", systemImage: "checkmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 2)
     }
 }
 
@@ -46,11 +74,61 @@ private struct GeneralSection: View {
     }
 }
 
+/// Ready-made sizes so nobody has to reason about cores and gigabytes to get started.
+private enum PerformancePreset: CaseIterable, Identifiable {
+    case light, balanced, maximum
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .light: "Light"
+        case .balanced: "Balanced"
+        case .maximum: "Maximum"
+        }
+    }
+
+    func values(for os: GuestOS) -> (cpus: Int, memory: Int) {
+        switch self {
+        case .light: (2, os == .macOS || os == .windows ? 4096 : 2048)
+        case .balanced: (HostInfo.recommendedCPUs, HostInfo.recommendedMemoryMiB(for: os))
+        case .maximum: (HostInfo.maxCPUs, HostInfo.maxMemoryMiB)
+        }
+    }
+}
+
 private struct SystemSection: View {
     @Binding var config: VMConfiguration
 
+    private var current: PerformancePreset? {
+        PerformancePreset.allCases.first {
+            let v = $0.values(for: config.guestOS)
+            return v.cpus == config.cpuCount && v.memory == config.memoryMiB
+        }
+    }
+
     var body: some View {
-        Section("System") {
+        Section {
+            // label above the control: a segmented picker beside its label can be wider than the
+            // inspector, which makes the split view fight over column widths
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Performance")
+                    Spacer()
+                    if current == nil { Text("Custom").font(.caption).foregroundStyle(.secondary) }
+                }
+                Picker("Performance", selection: Binding(
+                    get: { current },
+                    set: { preset in
+                        guard let preset else { return }
+                        let v = preset.values(for: config.guestOS)
+                        config.cpuCount = v.cpus
+                        config.memoryMiB = v.memory
+                    })) {
+                    ForEach(PerformancePreset.allCases) { Text($0.title).tag(Optional($0)) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
             ResourceSlider(title: "CPU cores", symbol: "cpu", value: $config.cpuCount, range: 1...HostInfo.maxCPUs,
                            recommended: HostInfo.recommendedCPUs)
             ResourceSlider(title: "Memory", symbol: "memorychip", value: $config.memoryMiB, range: 1024...HostInfo.maxMemoryMiB, step: 512,
@@ -62,6 +140,10 @@ private struct SystemSection: View {
                 }
                 .disabled(!HostInfo.supportsNestedVirtualization)
             }
+        } header: {
+            Text("System")
+        } footer: {
+            Text("This Mac has \(HostInfo.totalCPUs) cores (\(HostInfo.performanceCores) performance) and \(HostInfo.memoryMiB.formattedMemory). Maximum leaves enough for macOS.")
         }
     }
 }
@@ -75,22 +157,50 @@ private struct DisplaySection: View {
         ("3840 × 2160 (4K)", 3840, 2160),
     ]
 
+    private var isMac: Bool { config.guestOS == .macOS }
+    private var followsWindow: Bool { config.engine == .apple && config.display.dynamicResolution }
+
     var body: some View {
-        Section("Display") {
-            Picker("Resolution", selection: Binding(
-                get: { "\(config.display.widthPixels)x\(config.display.heightPixels)" },
-                set: { value in
-                    let parts = value.split(separator: "x").compactMap { Int($0) }
-                    if parts.count == 2 { config.display.widthPixels = parts[0]; config.display.heightPixels = parts[1] }
-                })) {
-                ForEach(Self.presets, id: \.0) { preset in
-                    Text(preset.0).tag("\(preset.1)x\(preset.2)")
-                }
-                if !Self.presets.contains(where: { $0.1 == config.display.widthPixels && $0.2 == config.display.heightPixels }) {
-                    Text("\(config.display.widthPixels) × \(config.display.heightPixels)").tag("\(config.display.widthPixels)x\(config.display.heightPixels)")
+        Section {
+            if config.engine == .apple && !isMac {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Text size")
+                    Picker("Text size", selection: Binding(get: { config.display.effectiveScaling }, set: { config.display.scaling = $0 })) {
+                        Text("Sharp").tag(DisplayScaling.sharp)
+                        Text("Medium").tag(DisplayScaling.balanced)
+                        Text("Large").tag(DisplayScaling.large)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .disabled(!followsWindow)
+                    Text(followsWindow ? config.display.effectiveScaling.detail : "Turn on “Resize with window” to choose a text size.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            if config.guestOS == .macOS {
+            if config.engine == .apple {
+                Toggle(isOn: $config.display.dynamicResolution) {
+                    Text("Resize with window")
+                    Text("The guest's screen follows the window as you resize it.")
+                }
+            }
+            if !followsWindow || isMac {
+                Picker(isMac && followsWindow ? "Starting resolution" : "Resolution", selection: Binding(
+                    get: { "\(config.display.widthPixels)x\(config.display.heightPixels)" },
+                    set: { value in
+                        let parts = value.split(separator: "x").compactMap { Int($0) }
+                        if parts.count == 2 { config.display.widthPixels = parts[0]; config.display.heightPixels = parts[1] }
+                    })) {
+                    ForEach(Self.presets, id: \.0) { preset in
+                        Text(preset.0).tag("\(preset.1)x\(preset.2)")
+                    }
+                    if !Self.presets.contains(where: { $0.1 == config.display.widthPixels && $0.2 == config.display.heightPixels }) {
+                        Text("\(config.display.widthPixels) × \(config.display.heightPixels)").tag("\(config.display.widthPixels)x\(config.display.heightPixels)")
+                    }
+                }
+            }
+            if isMac {
                 Picker("Pixel density", selection: $config.display.pixelsPerInch) {
                     Text("Standard (110 ppi)").tag(110)
                     Text("Retina (220 ppi)").tag(220)
@@ -99,12 +209,8 @@ private struct DisplaySection: View {
                     }
                 }
             }
-            if config.engine == .apple {
-                Toggle(isOn: $config.display.dynamicResolution) {
-                    Text("Resize with window")
-                    Text("Guest resolution follows the window size.")
-                }
-            }
+        } header: {
+            Text("Display")
         }
     }
 }

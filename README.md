@@ -12,9 +12,11 @@
 <p align="center">
   <a href="https://github.com/BryanParreira/Orbit/releases/latest"><b>Download for Mac</b></a>
   &nbsp;·&nbsp;
-  <a href="#build-from-source">Build from source</a>
+  <a href="docs/GUIDE.md">User guide</a>
   &nbsp;·&nbsp;
-  <a href="#releasing">Releasing</a>
+  <a href="SECURITY.md">Security</a>
+  &nbsp;·&nbsp;
+  <a href="#build-from-source">Build from source</a>
 </p>
 
 <p align="center">
@@ -40,6 +42,8 @@
 
 **It takes what you already have.** ISOs, macOS restore images, and disks from UTM, VMware, VirtualBox or Hyper-V. Drop them in and Orbit works out the rest.
 
+**It's safe by design.** Downloads are checksum-verified, guests get only what you share, and Orbit never partitions your disks, installs background services or asks for your password.
+
 ---
 
 ## Create a machine in two steps
@@ -50,13 +54,19 @@
 
 Choose a system, review the settings Orbit picked, and click **Create**.
 
-- **Always the latest release.** Ubuntu, Fedora, Debian and Alpine are fetched from their official mirrors at the moment you click, so the link is never stale. macOS comes straight from Apple, matched to what your Mac supports.
+- **Always the latest release, verified.** Each system is fetched from its official server at the moment you click, so the link is never stale, and checked against the checksum the project publishes before it's used. macOS comes straight from Apple, matched to what your Mac supports.
 - **Smart defaults.** Performance cores only, memory sized to leave macOS room to breathe, and disks that take space only as the guest writes.
 - **No waiting in a dialog.** The new machine appears in your library immediately, with download speed, time left and install progress on its own page.
 
 <p align="center">
   <img src="docs/images/new-vm.png" alt="Configuring a new Ubuntu machine" width="820">
 </p>
+
+### Supported systems
+
+| Native · Apple Virtualization | Compatibility · QEMU |
+|---|---|
+| macOS · Ubuntu · Ubuntu Server · Fedora · Debian · **Kali Linux** · Rocky Linux · AlmaLinux · openSUSE Tumbleweed · NixOS · Alpine · any ARM64 Linux ISO | Windows 11 on ARM · FreeBSD · any x86-64 system (emulated) |
 
 ---
 
@@ -71,6 +81,7 @@ Choose a system, review the settings Orbit picked, and click **Create**.
 | **Instant duplicates** | Clone a machine in a second, with a fresh hardware identity so both can run side by side |
 | **Sparse disks** | Apple's ASIF format for native machines, SSD-tuned QCOW2 for QEMU |
 | **Rosetta for Linux** | Run x86-64 Linux binaries in ARM guests at near-native speed |
+| **Retina-aware text size** | Linux guests look the same size as macOS on a Retina screen, or switch to full Retina sharpness |
 | **Nested virtualization** | Run KVM inside Linux guests on M3 and newer |
 | **Live shared folders** | Add or remove Mac folders while the guest is running |
 | **Disk performance** | Safe, Balanced or Fast, mapped to the hypervisor's sync and cache modes |
@@ -99,6 +110,17 @@ Existing machines can take an extra disk or a new installer from their settings.
 
 ---
 
+## Private and secure
+
+- **No account, no analytics, no tracking.** Orbit goes online only to download systems you ask for and to check for its own updates.
+- **Nothing installed on your system.** No helpers, login items or extensions, no administrator password, and it never partitions or formats your Mac's disks. Settings → Storage shows everything Orbit keeps, with sizes.
+- **Guests get only what you give them.** Clipboard sharing and the microphone are off by default; shared folders can be read-only.
+- **Untrusted machines stay contained.** Packages from elsewhere can't reach files outside themselves and start without shared folders.
+
+Read the full [security model](SECURITY.md).
+
+---
+
 ## Always up to date
 
 Orbit updates itself. When a new version is published it shows up in **Orbit → Check for Updates…**, or in the background once a day if you leave that on. Updates are verified with an EdDSA signature before anything is installed, replace the app in place, and never touch your machines. Running machines are suspended before the update and resume afterwards.
@@ -116,7 +138,9 @@ Orbit updates itself. When a new version is published it shows up in **Orbit →
 
 Orbit is signed with a Developer ID and notarized by Apple, so it opens without warnings.
 
-**Requirements:** a Mac with Apple Silicon running macOS 26 or later. QEMU is optional and only needed for Windows and x86-64 guests.
+**Requirements:** a Mac with Apple Silicon running macOS 26 or later. QEMU is optional and only needed for Windows, FreeBSD and x86-64 guests.
+
+New to virtual machines? The **[user guide](docs/GUIDE.md)** walks through everything, from your first machine to shared folders, Windows 11 and uninstalling. It's also in Orbit's **Help** menu.
 
 ---
 

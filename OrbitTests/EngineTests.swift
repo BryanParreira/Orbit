@@ -191,13 +191,92 @@ struct AppleConfigurationTests {
         #expect(!latest.version.isEmpty)
     }
 
-    @Test(arguments: [ISOResolver.ubuntuDesktop, .fedoraWorkstation, .debianNetinst, .alpineVirt])
+    @Test(arguments: [ISOResolver.ubuntuDesktop, .ubuntuServer, .fedoraWorkstation, .debianNetinst, .alpineVirt,
+                      .kaliInstaller, .rockyMinimal, .almaMinimal, .openSUSETumbleweed, .nixosMinimal, .freeBSD])
     func distroResolves(_ resolver: ISOResolver) async throws {
         let resolved = try await resolver.resolve()
         #expect(resolved.url.pathExtension == "iso")
+        // every download must be verifiable: its checksum list has to name this exact image
+        let checksum = try #require(resolved.checksumURL, "\(resolver) has no checksum source")
+        let hash = try await ChecksumVerifier.expectedHash(for: resolved.url.lastPathComponent, from: checksum)
+        #expect(hash.count == 64)
         var request = URLRequest(url: resolved.url)
         request.httpMethod = "HEAD"
         let (_, response) = try await URLSession.shared.data(for: request)
         #expect((response as? HTTPURLResponse)?.statusCode == 200, "\(resolved.url)")
+    }
+}
+
+
+struct ChecksumTests {
+    @Test func parsesBothChecksumFormats() throws {
+        let gnu = """
+        aaaa000000000000000000000000000000000000000000000000000000000000  other.iso
+        b9a08050ee522fbee7cac703b1bc48178f79eb974c962d4ed9dc1ccfdfa77fb6  kali-linux-2026.2-installer-arm64.iso
+        """
+        #expect(try ChecksumVerifier.expectedHash(for: "kali-linux-2026.2-installer-arm64.iso", in: gnu) == "b9a08050ee522fbee7cac703b1bc48178f79eb974c962d4ed9dc1ccfdfa77fb6")
+        let bsd = "# comment\nSHA256 (Rocky-10.2-aarch64-minimal.iso) = 1D1C21199DF32F6D17EEDB4F713EE0D089B49294401A364B640FCF4FFAB45F35\n"
+        #expect(try ChecksumVerifier.expectedHash(for: "Rocky-10.2-aarch64-minimal.iso", in: bsd) == "1d1c21199df32f6d17eedb4f713ee0d089b49294401a364b640fcf4ffab45f35")
+        #expect(throws: (any Error).self) { try ChecksumVerifier.expectedHash(for: "missing.iso", in: gnu) }
+    }
+
+    @Test func tamperedDownloadIsDeleted() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("sum-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let iso = dir.appendingPathComponent("image.iso")
+        try Data("real contents".utf8).write(to: iso)
+        let good = try await ChecksumVerifier.sha256(of: iso)
+        // a list that matches: verifies and leaves the file
+        let sums = dir.appendingPathComponent("SHA256SUMS")
+        try "\(good)  image.iso\n".write(to: sums, atomically: true, encoding: .utf8)
+        try await ChecksumVerifier.verify(iso, against: sums)
+        #expect(FileManager.default.fileExists(atPath: iso.path))
+        // the file changes after verification: the old marker no longer covers it
+        try Data("altered".utf8).write(to: iso)
+        try String(repeating: "0", count: 64).appending("  image.iso\n").write(to: sums, atomically: true, encoding: .utf8)
+        await #expect(throws: ChecksumVerifier.Failure.self) { try await ChecksumVerifier.verify(iso, against: sums) }
+        #expect(!FileManager.default.fileExists(atPath: iso.path))
+    }
+}
+
+struct PackageSafetyTests {
+    @Test func rejectsPathsThatEscapeThePackage() {
+        for bad in ["../x.img", "a/b.img", "..", ".", "", "/etc/passwd"] {
+            #expect(!PackageValidator.isContainedName(bad), "\(bad)")
+        }
+        #expect(PackageValidator.isContainedName("Disk-1A2B.asif"))
+    }
+
+    @Test func importedPackagesLoseHostAccess() {
+        var config = VMConfiguration(name: "x", engine: .qemu, guestOS: .linux, cpuCount: 1, memoryMiB: 1024)
+        config.disks = [
+            DiskConfiguration(path: "Disk.qcow2", sizeGiB: 8),
+            DiskConfiguration(path: "../../Documents/secret.img", sizeGiB: 1),
+            DiskConfiguration(path: "/Users/someone/secret.img", sizeGiB: 1),
+            DiskConfiguration(path: "/Users/someone/installer.iso", sizeGiB: 0, isReadOnly: false, isRemovable: true),
+        ]
+        config.sharedFolders = [SharedFolder(path: NSHomeDirectory())]
+        config.qemu.extraArguments = ["-drive", "file=/etc/hosts"]
+        config.network.mode = .bridged
+        let removed = PackageValidator.sanitize(&config, imported: true)
+        #expect(config.disks.map(\.path) == ["Disk.qcow2", "/Users/someone/installer.iso"])
+        #expect(config.disks[1].isReadOnly, "installer media is forced read-only")
+        #expect(config.sharedFolders.isEmpty)
+        #expect(config.qemu.extraArguments.isEmpty)
+        #expect(config.network.mode == .nat)
+        #expect(removed.count == 4)
+    }
+
+    @Test func qemuEscapesCommasInPaths() {
+        var config = VMConfiguration(name: "x", engine: .qemu, guestOS: .linux, cpuCount: 1, memoryMiB: 1024)
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("a,readonly=off,b")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        FileManager.default.createFile(atPath: dir.appendingPathComponent("disk.img").path, contents: Data())
+        config.disks = [DiskConfiguration(path: "disk.img", sizeGiB: 1)]
+        let args = QEMUArgumentBuilder(config: config, bundle: VMBundle(url: dir), qmpSocket: "/tmp/q", dataDirectory: URL(fileURLWithPath: "/share")).build()
+        let drive = args.first { $0.contains("disk.img") } ?? ""
+        #expect(drive.contains("a,,readonly=off,,b"), "commas in paths must be doubled: \(drive)")
     }
 }

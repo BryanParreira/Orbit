@@ -15,6 +15,10 @@ enum SelfTest {
             AppRouter.shared.selection = vm.id
             Task { await VMActions.startAndShow(vm, openWindow: openWindow) }
         }
+        if let name = UserDefaults.standard.string(forKey: "OrbitShowInspector"), let vm = library.vms.first(where: { $0.config.name == name }) {
+            AppRouter.shared.selection = vm.id
+            AppRouter.shared.isShowingInspector = true
+        }
         if let template = UserDefaults.standard.string(forKey: "OrbitShowWizard") {
             AppRouter.shared.pendingTemplateID = template.isEmpty || template == "choose" ? nil : template
             AppRouter.shared.isShowingWizard = true

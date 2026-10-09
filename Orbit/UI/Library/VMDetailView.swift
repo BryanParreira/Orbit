@@ -48,6 +48,21 @@ private struct HeaderView: View {
     let vm: VMInstance
 
     var body: some View {
+        // actions move under the title when the pane is narrow (sidebar and inspector both open)
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 16) {
+                identity
+                Spacer(minLength: 16)
+                ActionBar(vm: vm)
+            }
+            VStack(alignment: .leading, spacing: 14) {
+                identity
+                ActionBar(vm: vm)
+            }
+        }
+    }
+
+    private var identity: some View {
         HStack(alignment: .center, spacing: 16) {
             OSArtwork(config: vm.config, size: 52)
             VStack(alignment: .leading, spacing: 3) {
@@ -68,8 +83,6 @@ private struct HeaderView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
             }
-            Spacer(minLength: 16)
-            ActionBar(vm: vm)
         }
     }
 
@@ -179,9 +192,10 @@ private struct PreviewView: View {
     @ViewBuilder
     private var screen: some View {
         if let image = vm.screenshot {
+            // fit, not fill: the whole guest screen, letterboxed, never cropped
             Image(nsImage: image)
                 .resizable()
-                .aspectRatio(contentMode: .fill)
+                .aspectRatio(contentMode: .fit)
                 .opacity(vm.state == .running ? 1 : 0.45)
                 .grayscale(vm.state == .running ? 0 : 1)
         } else {

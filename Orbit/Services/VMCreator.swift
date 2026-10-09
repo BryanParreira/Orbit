@@ -22,6 +22,8 @@ struct VMDraft {
     var rosetta: Bool
     var sharedFolder: URL?
     var startWhenReady = true
+    /// Off unless the user turns it on: a guest with it can read anything copied on this Mac.
+    var clipboardSharing = false
     /// Boot an existing disk image instead of creating a blank one.
     var existingDisk: URL?
     var existingDiskFormat: DiskFormat?
@@ -52,6 +54,7 @@ enum VMCreator {
                                      architecture: draft.architecture, cpuCount: draft.cpuCount, memoryMiB: draft.memoryMiB)
         config.templateID = draft.template.id
         config.rosetta = draft.rosetta && draft.guestOS == .linux && draft.engine == .apple
+        config.clipboardSharing = draft.clipboardSharing && draft.guestOS == .linux && draft.engine == .apple
         if let folder = draft.sharedFolder {
             config.sharedFolders = [SharedFolder(path: folder.path)]
         }
@@ -132,6 +135,11 @@ enum VMCreator {
                     let resolved = try await resolver.resolve()
                     vm.installStatus = "Downloading \(draft.template.name) \(resolved.version)"
                     let iso = try await download(resolved.url, into: library, for: vm)
+                    if let checksum = resolved.checksumURL {
+                        vm.installStatus = "Verifying \(draft.template.name) \(resolved.version)…"
+                        vm.installProgress = nil
+                        try await ChecksumVerifier.verify(iso, against: checksum)
+                    }
                     vm.attachInstaller(iso)
                     vm.saveNow()
                 }

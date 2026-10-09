@@ -16,6 +16,16 @@ struct OrbitCommands: Commands {
                 .keyboardShortcut("o")
         }
 
+        CommandGroup(replacing: .help) {
+            Link("Orbit User Guide", destination: HelpLinks.guide)
+            Link("Shared Folders and Clipboard", destination: HelpLinks.section("sharing-files-and-the-clipboard"))
+            Link("Troubleshooting", destination: HelpLinks.section("troubleshooting"))
+            Divider()
+            Link("Privacy and Security", destination: HelpLinks.security)
+            Link("Release Notes", destination: HelpLinks.releases)
+            Link("Report a Problem…", destination: HelpLinks.issues)
+        }
+
         CommandMenu("Machine") {
             Button(vm?.state == .paused ? "Resume" : "Start") {
                 guard let vm else { return }
@@ -67,5 +77,17 @@ struct CheckForUpdatesButton: View {
     var body: some View {
         Button("Check for Updates…") { updater.checkForUpdates() }
             .disabled(!updater.isConfigured || !updater.canCheckForUpdates)
+    }
+}
+
+enum HelpLinks {
+    private static let repo = "https://github.com/BryanParreira/Orbit"
+    static let guide = URL(string: "\(repo)/blob/main/docs/GUIDE.md")!
+    static let security = URL(string: "\(repo)/blob/main/SECURITY.md")!
+    static let releases = URL(string: "\(repo)/releases")!
+    static let issues = URL(string: "\(repo)/issues/new")!
+
+    static func section(_ anchor: String) -> URL {
+        URL(string: "\(repo)/blob/main/docs/GUIDE.md#\(anchor)")!
     }
 }
