@@ -1,8 +1,8 @@
 // Orbit release configuration. scripts/release.sh updates the version lines.
 
 // Shown to users ("0.2.0") and compared by Sparkle (build number must always increase).
-MARKETING_VERSION = 0.1.5
-CURRENT_PROJECT_VERSION = 202610101628
+MARKETING_VERSION = 0.1.6
+CURRENT_PROJECT_VERSION = 202610101846
 
 // Developer ID team used for release builds and notarization.
 ORBIT_TEAM_ID = 5PNLAR99PK
