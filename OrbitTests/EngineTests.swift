@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import Virtualization
 @testable import Orbit
 
 struct EngineTests {
@@ -194,6 +195,31 @@ struct AppleConfigurationTests {
         var builder = AppleConfigurationBuilder(config: config, bundle: bundle)
         let vz = try builder.build()
         try vz.validate()
+    }
+
+    /// Linux installers must see the machine's own disk first (vda) and the installer after it:
+    /// as a USB drive the installer was "sda", listed and preselected first, and partitioning it failed.
+    @Test func linuxInstallerComesAfterTheMachinesDisk() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vz-\(UUID().uuidString).orbitvm")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let bundle = VMBundle(url: dir)
+        try PlatformProvisioner.provisionGeneric(bundle: bundle)
+        try DiskImageService.createSparseRaw(at: dir.appendingPathComponent("disk.img"), bytes: 1 << 30)
+        try DiskImageService.createSparseRaw(at: dir.appendingPathComponent("installer.iso"), bytes: 4 << 20)
+        var config = VMConfiguration(name: "order", engine: .apple, guestOS: .linux, cpuCount: 2, memoryMiB: 2048)
+        // installer listed first in the settings on purpose: the order must not depend on it
+        config.disks = [
+            DiskConfiguration(path: dir.appendingPathComponent("installer.iso").path, sizeGiB: 0, isReadOnly: true, interface: .usb, isRemovable: true),
+            DiskConfiguration(path: "disk.img", sizeGiB: 1),
+        ]
+        var builder = AppleConfigurationBuilder(config: config, bundle: bundle)
+        let devices = try builder.build().storageDevices
+        #expect(devices.count == 2)
+        #expect(devices.allSatisfy { $0 is VZVirtioBlockDeviceConfiguration }, "no USB drive for Linux to list first")
+        let attachments = devices.compactMap { ($0.attachment as? VZDiskImageStorageDeviceAttachment) }
+        #expect(attachments.first?.url.lastPathComponent == "disk.img", "the machine's disk is vda")
+        #expect(attachments.last?.isReadOnly == true, "the installer is read-only")
     }
 
     @Test func missingDiskFailsWithItsName() throws {

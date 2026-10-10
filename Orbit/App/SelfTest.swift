@@ -169,7 +169,7 @@ enum SelfTest {
             // 2. create it in the chosen folder and boot
             var draft = VMDraft(template: template, name: "SelfTest \(template.name)")
             draft.installer = .local(installer)
-            draft.location = machines
+            draft.location = UserDefaults.standard.bool(forKey: "OrbitBootNoLocation") ? nil : machines
             draft.memoryMiB = min(draft.memoryMiB, 4096)
             draft.cpuCount = min(4, HostInfo.maxCPUs)
             // "-OrbitBootForward 2222:22" forwards Mac port 2222 to the guest's port 22
@@ -206,6 +206,9 @@ enum SelfTest {
                 if machine.state != .running { return "guest stopped by itself after \(Int(Date().timeIntervalSince(started))) s: \(machine.lastError ?? machine.state.label)" }
                 if let error = machine.lastError { return "error while running: \(error)" }
                 let elapsed = Int(Date().timeIntervalSince(started))
+                if let control = UserDefaults.standard.string(forKey: "OrbitAppleControlDir"), machine.config.engine == .apple {
+                    await driveAppleGuest(machine, control: URL(fileURLWithPath: control, isDirectory: true), tick: elapsed)
+                }
                 if elapsed >= (captured + 1) * (seconds / 3) {
                     captured += 1
                     await saveScreenshot(machine, to: shots.appendingPathComponent("\(template.id)-\(elapsed)s.png"))
@@ -217,6 +220,52 @@ enum SelfTest {
         } catch {
             let ns = error as NSError
             return "error: \(ErrorMessages.message(for: error) ?? error.localizedDescription) [\(ns.domain) \(ns.code)]"
+        }
+    }
+
+    /// Apple-engine guests have no QMP: type into the display view the way real key presses
+    /// arrive. Same folder protocol as QEMU's (`keys.txt` in, `screen.png` out).
+    private static func driveAppleGuest(_ vm: VMInstance, control: URL, tick: Int) async {
+        try? FileManager.default.createDirectory(at: control, withIntermediateDirectories: true)
+        guard let view = vm.appleBackend?.displayView, let window = view.window else { return }
+        let keys = control.appendingPathComponent("keys.txt")
+        if let text = try? String(contentsOf: keys, encoding: .utf8) {
+            try? FileManager.default.removeItem(at: keys)
+            for line in text.split(whereSeparator: \.isNewline).map(String.init) {
+                for (code, chars, shift) in macKeys(line) {
+                    for type in [NSEvent.EventType.keyDown, .keyUp] {
+                        if let event = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: shift ? .shift : [],
+                                                        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                                        context: nil, characters: chars, charactersIgnoringModifiers: chars.lowercased(),
+                                                        isARepeat: false, keyCode: code) {
+                            if type == .keyDown { view.keyDown(with: event) } else { view.keyUp(with: event) }
+                        }
+                        try? await Task.sleep(for: .milliseconds(40))
+                    }
+                }
+                try? await Task.sleep(for: .milliseconds(150))
+            }
+        }
+        if tick % 5 == 0 {
+            await vm.captureScreenshot()
+            try? FileManager.default.removeItem(at: control.appendingPathComponent("screen.png"))
+            try? FileManager.default.copyItem(at: vm.bundle.screenshotURL, to: control.appendingPathComponent("screen.png"))
+        }
+    }
+
+    /// macOS virtual key codes: "ret", "tab", "spc", "esc", "up"/"down"/"left"/"right", "bksp",
+    /// or "text:..." for letters, digits, space, "-", "." and "/".
+    private static func macKeys(_ line: String) -> [(UInt16, String, Bool)] {
+        let named: [String: (UInt16, String)] = ["ret": (36, "\r"), "tab": (48, "\t"), "spc": (49, " "), "esc": (53, "\u{1b}"),
+                                                 "bksp": (51, "\u{7f}"), "left": (123, ""), "right": (124, ""), "down": (125, ""), "up": (126, "")]
+        if let key = named[line] { return [(key.0, key.1, false)] }
+        guard line.hasPrefix("text:") else { return [] }
+        let letters: [Character: UInt16] = ["a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9, "b": 11, "q": 12,
+                                            "w": 13, "e": 14, "r": 15, "y": 16, "t": 17, "1": 18, "2": 19, "3": 20, "4": 21, "6": 22, "5": 23,
+                                            "9": 25, "7": 26, "-": 27, "8": 28, "0": 29, "o": 31, "u": 32, "i": 34, "p": 35, "l": 37,
+                                            "j": 38, "k": 40, "n": 45, "m": 46, ".": 47, "/": 44, " ": 49]
+        return line.dropFirst(5).compactMap { c in
+            letters[Character(c.lowercased())].map { ($0, String(c), c.isUppercase) }
         }
     }
 

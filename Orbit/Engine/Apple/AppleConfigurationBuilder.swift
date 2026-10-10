@@ -156,6 +156,10 @@ struct AppleConfigurationBuilder {
 
     // MARK: - Storage
 
+    /// Installers proven to boot from a USB drive and not to offer it as a disk to install on.
+    /// Every other Linux installer gets a read-only virtio drive after the machine's disk.
+    static let installerStaysUSB: Set<String> = ["fedora", "opensuse"]
+
     private func storageDevices() throws -> [VZStorageDeviceConfiguration] {
         // UTM: cached mode prevents filesystem corruption seen with Linux on virtio-blk
         let isLinux = config.guestOS == .linux
@@ -165,6 +169,7 @@ struct AppleConfigurationBuilder {
         case .fast: .none
         }
         var devices: [VZStorageDeviceConfiguration] = []
+        var installers: [VZStorageDeviceConfiguration] = []
         for disk in config.disks {
             let url = disk.isRemovable ? bundle.diskURL(for: disk) : resolve(bundle.diskURL(for: disk))
             guard FileManager.default.fileExists(atPath: url.path) else {
@@ -173,7 +178,14 @@ struct AppleConfigurationBuilder {
             }
             if disk.isRemovable {
                 let attachment = try VZDiskImageStorageDeviceAttachment(url: url, readOnly: true)
-                devices.append(VZUSBMassStorageDeviceConfiguration(attachment: attachment))
+                if config.guestOS == .macOS || Self.installerStaysUSB.contains(config.templateID ?? "") {
+                    devices.append(VZUSBMassStorageDeviceConfiguration(attachment: attachment))
+                } else {
+                    // a read-only virtio disk after the machine's own: Linux names it vdb, so
+                    // installers list and preselect the real disk (vda). As a USB drive it was
+                    // "sda", listed first, and partitioning it failed.
+                    installers.append(VZVirtioBlockDeviceConfiguration(attachment: attachment))
+                }
                 continue
             }
             let attachment = try VZDiskImageStorageDeviceAttachment(
@@ -195,7 +207,7 @@ struct AppleConfigurationBuilder {
                 devices.append(block)
             }
         }
-        return devices
+        return devices + installers
     }
 
     // MARK: - Network

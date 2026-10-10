@@ -336,6 +336,8 @@ If you installed QEMU through Orbit, remove it with `brew uninstall qemu` (and `
 
 **"Couldn't resume the saved session, so the machine started fresh."** The machine's hardware settings changed since it was suspended, or macOS was updated. The guest started normally; unsaved work from the suspended session is gone.
 
+**Linux installer: partitioning fails, or it offers a 4 GB "Apple Virtual Disk".** That disk is the installer itself; Orbit before 0.1.5 attached it as a USB drive. Choose **Virtual disk 1 (vda)** instead, or update Orbit.
+
 **No network in Windows.** Machines created with their installer get the drivers during setup. Otherwise add them yourself ([see above](#windows-11-on-arm)).
 
 **Windows setup starts over after a restart.** Press no key at *Press any key to boot from CD or DVD* during setup's restarts. Once Windows is installed, eject the installer.
