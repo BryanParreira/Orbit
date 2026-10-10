@@ -89,6 +89,8 @@ targets:
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         GENERATE_INFOPLIST_FILE: NO
         COMBINE_HIDPI_IMAGES: YES
+        # macOS 27 frameworks (USB passthrough) load only where they exist; Orbit runs on macOS 26 too
+        OTHER_LDFLAGS: ["-weak_framework", "AccessoryAccess"]
 
   OrbitTests:
     type: bundle.unit-test

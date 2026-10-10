@@ -108,6 +108,8 @@ Drop a file on the Orbit window, open it from Finder, or choose **File → Impor
 
 Existing machines can take an extra disk or a new installer from their settings.
 
+**Keep machines wherever you like.** New machines go in Orbit's library, or in any folder you choose, such as an external drive when your Mac is short on space. **Move…** takes an existing machine somewhere else, with everything it uses.
+
 ---
 
 ## Private and secure

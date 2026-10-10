@@ -369,8 +369,12 @@ private struct NetworkSection: View {
                     }
                 }
             }
-            if config.engine == .qemu && config.network.mode == .nat {
+            if config.network.mode == .nat {
                 PortForwardEditor(forwards: $config.network.portForwards)
+                if config.engine == .apple && !config.network.portForwards.isEmpty {
+                    Text("Other devices on your network reach these ports at this Mac's address. Changes apply the next time the machine starts.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
         }
     }
@@ -516,8 +520,10 @@ private struct AdvancedSection: View {
             if config.engine == .qemu {
                 Toggle(isOn: $config.qemu.tpm) {
                     Text("TPM 2.0")
-                    Text("Required by Windows 11. Uses swtpm.")
+                    Text(HostInfo.swtpm == nil ? "Needs swtpm (brew install swtpm). Windows installs without one." : "Emulated with swtpm. Don't turn it off after Windows is installed.")
                 }
+                // without swtpm it can only be turned off, never on
+                .disabled(HostInfo.swtpm == nil && !config.qemu.tpm)
                 if !config.architecture.isNative {
                     Picker("Translation cache", selection: $config.qemu.tcgCacheMiB) {
                         ForEach([256, 512, 1024, 2048], id: \.self) { Text("\($0) MB").tag($0) }

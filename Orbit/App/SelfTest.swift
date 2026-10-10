@@ -38,6 +38,7 @@ enum SelfTest {
             case "disk": await runDiskImport(file, library: library, openWindow: openWindow)
             case "qemu": await runQEMU(file, library: library)
             case "demo": await runDemo(file, library: library, openWindow: openWindow)
+            case "boot": await runBootTests(library: library, openWindow: openWindow)
             default: await run(library: library, openWindow: openWindow)
             }
         }
@@ -93,6 +94,140 @@ enum SelfTest {
             log("FAIL \(error.localizedDescription)")
         }
         log("DONE")
+    }
+
+    /// Every system the way a user gets it: resolve the newest release, download, verify, create
+    /// the machine in a chosen folder, boot it, and save screenshots of the guest.
+    ///
+    /// `-OrbitBootTemplates "alpine,debian,emulated=/path/x86.iso"` (an `=path` uses that file
+    /// instead of downloading), `-OrbitBootDir /Volumes/Drive/OrbitBootTest` (holds `isos/`,
+    /// `machines/` and `shots/`). Run the app in the background (`open -g`): if Orbit becomes the
+    /// active app while a guest runs, the run stops so no keystroke can reach a test guest.
+    private static func runBootTests(library: VMLibrary, openWindow: OpenWindowAction) async {
+        let defaults = UserDefaults.standard
+        guard let dir = defaults.string(forKey: "OrbitBootDir").map({ URL(fileURLWithPath: $0, isDirectory: true) }) else {
+            log("FAIL no -OrbitBootDir"); return
+        }
+        let isos = dir.appendingPathComponent("isos"), machines = dir.appendingPathComponent("machines"), shots = dir.appendingPathComponent("shots")
+        for folder in [isos, machines, shots] { try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+        let seconds = defaults.integer(forKey: "OrbitBootSeconds") > 0 ? defaults.integer(forKey: "OrbitBootSeconds") : 90
+        let entries = (defaults.string(forKey: "OrbitBootTemplates") ?? "").split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        var results: [String] = []
+        for entry in entries where !entry.isEmpty {
+            let parts = entry.split(separator: "=", maxSplits: 1).map(String.init)
+            let id = parts[0]
+            guard let template = OSTemplate.template(id: id) else { log("FAIL \(id): unknown template"); continue }
+            log("== \(template.name)")
+            let result = await bootTest(template, file: parts.count > 1 ? URL(fileURLWithPath: parts[1]) : nil,
+                                        isos: isos, machines: machines, shots: shots, seconds: seconds, library: library, openWindow: openWindow)
+            log("\(result.hasPrefix("PASS") ? "PASS" : "FAIL") \(template.name): \(result)")
+            results.append("\(template.name): \(result)")
+            if NSApp.isActive && !UserDefaults.standard.bool(forKey: "OrbitBootIgnoreFocus") { log("STOP Orbit became the active app"); break }
+        }
+        log("SUMMARY\n" + results.joined(separator: "\n"))
+        log("DONE")
+    }
+
+    private static func bootTest(_ template: OSTemplate, file: URL?, isos: URL, machines: URL, shots: URL, seconds: Int,
+                                 library: VMLibrary, openWindow: OpenWindowAction) async -> String {
+        var vm: VMInstance?
+        defer {
+            if let vm { Task { @MainActor in try? await library.delete(vm, permanently: true, removeInstaller: false) } }
+        }
+        do {
+            // 1. installer, as a user would get it
+            let installer: URL
+            if let file {
+                installer = file
+            } else if case .resolver(let resolver) = template.source {
+                let resolved = try await resolver.resolve()
+                log("resolved \(resolved.version): \(resolved.url.absoluteString)")
+                let task = DownloadTask(source: resolved.url, destination: isos.appendingPathComponent(resolved.url.lastPathComponent))
+                let progress = Task { @MainActor in
+                    while !Task.isCancelled {
+                        try? await Task.sleep(for: .seconds(30))
+                        log("download \(Int(task.fraction * 100))%")
+                    }
+                }
+                defer { progress.cancel() }
+                installer = try await task.run()
+                if let checksum = resolved.checksumURL {
+                    try await ChecksumVerifier.verify(installer, against: checksum)
+                    log("checksum verified")
+                } else {
+                    return "no checksum published"
+                }
+            } else if template.source == .macOSRestoreImage {
+                let latest = try await PlatformProvisioner.latestRestoreImage()
+                log("resolved macOS \(latest.version): \(latest.url.absoluteString)")
+                let task = DownloadTask(source: latest.url, destination: isos.appendingPathComponent(latest.url.lastPathComponent))
+                installer = try await task.run()
+            } else {
+                return "needs a file (\(template.id)=/path)"
+            }
+
+            // 2. create it in the chosen folder and boot
+            var draft = VMDraft(template: template, name: "SelfTest \(template.name)")
+            draft.installer = .local(installer)
+            draft.location = machines
+            draft.memoryMiB = min(draft.memoryMiB, 4096)
+            draft.cpuCount = min(4, HostInfo.maxCPUs)
+            // "-OrbitBootForward 2222:22" forwards Mac port 2222 to the guest's port 22
+            let forward = UserDefaults.standard.string(forKey: "OrbitBootForward")?.split(separator: ":").compactMap { Int($0) }
+            draft.startWhenReady = forward == nil
+            guard draft.isValid else { return "draft invalid" }
+            let machine = try await VMCreator.create(draft, in: library)
+            vm = machine
+            if let forward, forward.count == 2 {
+                _ = await waitFor("created", timeout: 300) { machine.installStatus == nil }
+                machine.config.network.portForwards = [PortForward(hostPort: forward[0], guestPort: forward[1])]
+                machine.saveNow()
+                await machine.start()
+                log("FORWARD Mac port \(forward[0]) → guest port \(forward[1])")
+            }
+            var last = ""
+            let timeout: Double = template.guestOS == .macOS ? 3600 : 300
+            _ = await waitFor("running", timeout: timeout) {
+                if let s = machine.installStatus, s != last { last = s; log("status: \(s)") }
+                return (machine.state == .running && machine.installStatus == nil) || machine.lastError != nil
+            }
+            if let error = machine.lastError { return "error: \(error)" }
+            guard machine.state == .running else { return "not running: \(machine.state.label)" }
+            if machine.hasEmbeddedDisplay { openWindow(id: SceneID.display, value: machine.id) }
+
+            // 3. let it boot, watching that nothing goes wrong and that no keystroke could reach it
+            let started = Date()
+            var captured = 0
+            while Date().timeIntervalSince(started) < Double(seconds) {
+                try? await Task.sleep(for: .seconds(1))
+                if NSApp.isActive && !UserDefaults.standard.bool(forKey: "OrbitBootIgnoreFocus") {
+                    await machine.forceStop(); return "stopped: Orbit became the active app"
+                }
+                if machine.state != .running { return "guest stopped by itself after \(Int(Date().timeIntervalSince(started))) s: \(machine.lastError ?? machine.state.label)" }
+                if let error = machine.lastError { return "error while running: \(error)" }
+                let elapsed = Int(Date().timeIntervalSince(started))
+                if elapsed >= (captured + 1) * (seconds / 3) {
+                    captured += 1
+                    await saveScreenshot(machine, to: shots.appendingPathComponent("\(template.id)-\(elapsed)s.png"))
+                }
+            }
+            let summary = "running \(seconds) s, \(captured) screenshots"
+            await machine.forceStop()
+            return "PASS " + summary
+        } catch {
+            let ns = error as NSError
+            return "error: \(ErrorMessages.message(for: error) ?? error.localizedDescription) [\(ns.domain) \(ns.code)]"
+        }
+    }
+
+    private static func saveScreenshot(_ vm: VMInstance, to url: URL) async {
+        if let qemu = vm.backend as? QEMUBackend {
+            do { try await qemu.screendump(to: url) } catch { log("screendump failed: \(error.localizedDescription)") }
+            return
+        }
+        await vm.captureScreenshot()
+        try? FileManager.default.removeItem(at: url)
+        try? FileManager.default.copyItem(at: vm.bundle.screenshotURL, to: url)
     }
 
     /// Showcase library for README screenshots: a running Alpine VM plus idle Ubuntu and Windows.

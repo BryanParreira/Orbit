@@ -11,6 +11,9 @@ struct GalleryView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 header
+                if !library.unreachableMachines.isEmpty {
+                    unreachableNotice
+                }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 270, maximum: 420), spacing: 20, alignment: .top)], spacing: 24) {
                     ForEach(library.vms) { vm in
                         MachineCard(vm: vm)
@@ -46,6 +49,23 @@ struct GalleryView: View {
             .controlSize(.large)
             .tint(Theme.ink)
         }
+    }
+
+    private var unreachableNotice: some View {
+        let count = library.unreachableMachines.count
+        let names = library.unreachableMachines.map { "“\($0.deletingPathExtension().lastPathComponent)”" }.formatted(.list(type: .and))
+        return HStack(spacing: 12) {
+            Image(systemName: "externaldrive.badge.exclamationmark")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+            Text("\(names) \(count == 1 ? "is" : "are") on a drive that isn't connected. \(count == 1 ? "It comes" : "They come") back when you connect it.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+            SettingsLink { Text("Manage") }
+        }
+        .padding(14)
+        .surface(radius: 12)
     }
 
     private var summary: String {
@@ -139,9 +159,12 @@ private struct MachineCard: View {
                     .grayscale(vm.state == .running ? 0 : 1)
             } else {
                 RadialGradient(colors: [Color.white.opacity(0.07), .clear], center: .center, startRadius: 0, endRadius: 220)
-                OSArtwork(config: vm.config, size: 56)
-                    .environment(\.colorScheme, .dark)
-                    .opacity(0.9)
+                // hidden under the progress overlay, where it would smudge through the glass
+                if vm.installStatus == nil && !vm.state.isBusy {
+                    OSArtwork(config: vm.config, size: 56)
+                        .environment(\.colorScheme, .dark)
+                        .opacity(0.9)
+                }
             }
             overlay
         }

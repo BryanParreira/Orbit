@@ -80,6 +80,9 @@ struct VMDisplayWindow: View {
             .disabled(vm.state != .running || !vm.canSuspend || vm.isDisposableRun)
             Button { isPickingFolder = true } label: { Label("Share Folder", systemImage: "folder.badge.plus") }
                 .help("Share a Mac folder with the guest (live)")
+            if #available(macOS 27, *), USBPassthrough.isAvailable {
+                USBMenu(vm: vm)
+            }
             if vm.config.guestOS != .macOS && vm.config.display.dynamicResolution {
                 Menu {
                     Picker("Text Size", selection: Binding(get: { vm.config.display.effectiveScaling }, set: { vm.config.display.scaling = $0 })) {
@@ -248,5 +251,47 @@ struct VirtualMachineDisplay: NSViewRepresentable {
         deinit {
             observers.forEach(NotificationCenter.default.removeObserver)
         }
+    }
+}
+
+/// USB devices plugged into the Mac, each one a toggle: on gives it to this machine.
+@available(macOS 27, *)
+private struct USBMenu: View {
+    let vm: VMInstance
+    @State private var usb = USBPassthrough.shared
+
+    var body: some View {
+        Menu {
+            if usb.devices.isEmpty {
+                Text("No USB devices connected")
+            }
+            ForEach(usb.devices) { device in
+                let owner = usb.owner(of: device)
+                Toggle(isOn: Binding(
+                    get: { owner == vm.id },
+                    set: { on in
+                        Task {
+                            do {
+                                if on { try await usb.attach(device, to: vm) } else { try await usb.detach(device, from: vm) }
+                            } catch {
+                                vm.report(error)
+                            }
+                        }
+                    })) {
+                    Text(device.name)
+                    if let owner, owner != vm.id {
+                        Text("In use by \(VMLibrary.shared.vm(with: owner)?.config.name ?? "another machine")")
+                    }
+                }
+                .disabled(owner != nil && owner != vm.id)
+            }
+            Divider()
+            Text("A device given to this machine is unavailable to macOS until you turn it off here, the machine shuts down, or you unplug it.")
+        } label: {
+            Label("USB", systemImage: "cable.connector")
+        }
+        .help("Connect a USB device from this Mac to the guest")
+        .disabled(vm.state != .running)
+        .onAppear { usb.start() }
     }
 }

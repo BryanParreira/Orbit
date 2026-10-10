@@ -9,9 +9,11 @@ enum ErrorMessages {
         if ns.domain == NSURLErrorDomain {
             switch ns.code {
             case NSURLErrorCancelled: return nil
-            case NSURLErrorNotConnectedToInternet, NSURLErrorNetworkConnectionLost:
+            case NSURLErrorNotConnectedToInternet:
                 return "You're offline. Connect to the internet and try again."
-            case NSURLErrorTimedOut:
+            case NSURLErrorNetworkConnectionLost:
+                return "The connection to the download server kept dropping, even after several retries. Check your connection and try again."
+            case NSURLErrorTimedOut, NSURLErrorCannotConnectToHost, NSURLErrorCannotFindHost, NSURLErrorDNSLookupFailed:
                 return "The download server didn't respond. Try again in a moment."
             case NSURLErrorCannotWriteToFile, NSURLErrorCannotCreateFile, NSURLErrorCannotMoveFile:
                 return "There isn't enough free space to save the download. Free up space and try again."

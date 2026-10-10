@@ -35,6 +35,7 @@ final class VMInstance: Identifiable {
     @ObservationIgnored private var saveTask: Task<Void, Never>?
     @ObservationIgnored private var screenshotTimer: Timer?
     @ObservationIgnored private var healthTimer: Timer?
+    @ObservationIgnored private var portForwarder: PortForwarder?
 
     nonisolated let id: UUID
 
@@ -178,14 +179,37 @@ final class VMInstance: Identifiable {
     // MARK: - Media
 
     func ejectInstaller() {
-        config.disks.removeAll { $0.isRemovable }
+        removeInstallers()
         config.bootFromInstaller = false
     }
 
+    /// Use `url` as the installer. A Windows drivers disc stays attached alongside it.
     func attachInstaller(_ url: URL) {
+        let drivers = config.driversDisc
+        removeInstallers(keeping: url, keepDrivers: true)
         config.disks.removeAll { $0.isRemovable }
         config.disks.append(DiskConfiguration(path: url.path, sizeGiB: 0, isReadOnly: true, interface: .usb, isRemovable: true))
+        if let drivers { config.disks.append(drivers) }
         config.bootFromInstaller = true
+    }
+
+    /// Attach the disc Windows setup installs its VirtIO drivers from.
+    func attachDriversDisc(_ url: URL) {
+        config.disks.removeAll { $0.isDriversDisc }
+        config.disks.append(DiskConfiguration(path: url.path, sizeGiB: 0, isReadOnly: true, interface: .usb, isRemovable: true))
+    }
+
+    /// Detach installer media. Media Orbit put in the package (a downloaded installer, the
+    /// drivers disc) has no other use, so its file goes too and the space comes back.
+    private func removeInstallers(keeping kept: URL? = nil, keepDrivers: Bool = false) {
+        let prefix = bundle.url.standardizedFileURL.path + "/"
+        for disk in config.disks where disk.isRemovable && disk.path.hasPrefix(prefix) && disk.path != kept?.path
+            && !(keepDrivers && disk.isDriversDisc) {
+            let url = URL(fileURLWithPath: disk.path)
+            try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.removeItem(at: VMLibrary.verificationMarker(for: url))
+        }
+        config.disks.removeAll { $0.isRemovable }
     }
 
     /// Validate and attach an installer image picked by the user.
@@ -289,12 +313,21 @@ final class VMInstance: Identifiable {
     // MARK: - Screenshots
 
     func captureScreenshot() async {
-        guard state == .running, appleBackend?.displayView?.window != nil else { return }
-        // hide Orbit's own overlays so only the guest's pixels are captured
-        isCapturingScreenshot = true
-        defer { isCapturingScreenshot = false }
-        try? await Task.sleep(for: .milliseconds(80))
-        guard let full = await appleBackend?.screenshot() else { return }
+        guard state == .running else { return }
+        let full: NSImage
+        if let qemu = backend as? QEMUBackend {
+            // QEMU draws in its own window; ask it for the guest's screen instead
+            guard let image = await qemu.screenshot() else { return }
+            full = image
+        } else {
+            guard appleBackend?.displayView?.window != nil else { return }
+            // hide Orbit's own overlays so only the guest's pixels are captured
+            isCapturingScreenshot = true
+            defer { isCapturingScreenshot = false }
+            try? await Task.sleep(for: .milliseconds(80))
+            guard let image = await appleBackend?.screenshot() else { return }
+            full = image
+        }
         // a frame grabbed before the guest redraws (just after resume) is solid black
         if screenshot != nil && full.isNearlyBlack { return }
         // a preview, not a capture: keep it small in memory and on disk
@@ -312,16 +345,32 @@ final class VMInstance: Identifiable {
         healthTimer?.invalidate()
         healthTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                guard let self, self.state == .running, let free = ResourceGuard.lowDiskSpace(for: self) else { return }
+                guard let self, self.state == .running else { return }
+                // disks grow as the guest writes; keep the Storage figure current
+                let disks = self.config.disks.filter { !$0.isRemovable && !$0.isExternal }.map(self.bundle.diskURL(for:))
+                self.diskUsageBytes = disks.reduce(0) { $0 + DiskImageService.allocatedBytes(at: $1) }
+                guard let free = ResourceGuard.lowDiskSpace(for: self) else { return }
                 await self.pause()
                 self.lastError = "“\(self.config.name)” was paused because only \(free.formattedBytes) is left on its disk. Free up space, then resume it."
             }
         }
     }
 
+    /// Apple-engine machines on shared networking: Mac ports relayed to the guest. (QEMU does
+    /// its own forwarding.)
+    private func startPortForwarding() {
+        guard portForwarder == nil, config.engine == .apple, config.network.mode == .nat, !config.network.portForwards.isEmpty else { return }
+        let forwarder = PortForwarder(forwards: config.network.portForwards, macAddress: config.network.macAddress)
+        let problems = forwarder.start()
+        portForwarder = forwarder
+        if !problems.isEmpty {
+            lastError = problems.joined(separator: "\n") + "\nAnother app may be using the port. Choose a different Mac port in Settings → Network."
+        }
+    }
+
     private func startScreenshotTimer() {
         screenshotTimer?.invalidate()
-        guard hasEmbeddedDisplay else { return }
+        guard hasEmbeddedDisplay || backend is QEMUBackend else { return }
         screenshotTimer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, self.state == .running else { return }
@@ -368,7 +417,12 @@ final class VMInstance: Identifiable {
         backend.onStateChange = { [weak self] state, error in
             guard let self else { return }
             self.state = state
+            if state == .running {
+                self.startPortForwarding()
+            }
             if state == .stopped {
+                self.portForwarder?.stop()
+                self.portForwarder = nil
                 self.startedAt = nil
                 self.isDisposableRun = false
                 self.screenshotTimer?.invalidate()

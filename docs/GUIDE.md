@@ -79,6 +79,20 @@ That's it. The machine appears in your library right away, and its page shows th
 
 Orbit recognizes files by what they contain, not by their names. If something can't be used, it tells you why.
 
+### Choosing where a machine is kept
+
+Machines go in Orbit's library unless you choose otherwise. In the Create step, **Location → Choose…** puts the new machine in any folder, on this Mac or another drive. That's useful when your Mac is short on space. Everything the machine uses is kept there, including the installer it downloads, and nothing else goes anywhere else.
+
+To change it later, shut the machine down and choose **Move…** from its menu (the **⋯** button, or right-click it). On the same drive a move is instant. To another drive, Orbit copies the machine, checks there's room first, and removes the original only once the copy is complete. **Move to Library** brings it back. The machine's page shows where it's kept under **Location**. Click it to see the machine in Finder.
+
+If a machine's drive is disconnected, Orbit says so and lists the machine again when you reconnect it. **Settings → Storage → Kept elsewhere** lists every machine outside the library. **Forget** stops listing one whose drive is gone for good, and never deletes anything.
+
+Tips:
+
+- An **APFS** drive keeps snapshots and duplicates instant. On other formats they make full copies.
+- Machines on a USB drive run slower than on your Mac's internal SSD. A Thunderbolt or USB4 SSD comes close.
+- The whole library can also move: **Settings → General → Library → Change…**.
+
 ---
 
 ## Installing the guest system
@@ -147,6 +161,24 @@ sudo dnf install spice-vdagent    # Fedora, Rocky, AlmaLinux
 
 Clipboard sharing is **off by default**. When it's on, the guest can read anything you copy on your Mac, including passwords, so turn it on only for systems you trust.
 
+### USB devices
+
+To use a USB drive's files in a machine, share the drive's folder (see above). It works for every system.
+
+Handing a whole USB device to a machine (a serial adapter, a security key, a microcontroller board, a USB Bluetooth adapter) is coming to Linux and macOS guests on macOS 27. It needs a permission Apple grants separately, and this version of Orbit doesn't have it yet. When it does, a **USB** button appears in the machine's toolbar. Windows machines (QEMU) can't take USB devices.
+
+### Bluetooth
+
+Bluetooth devices connected to your Mac already work in every machine: keyboards, mice and trackpads type and point in the guest, and headphones and speakers play its sound.
+
+A guest can't use your Mac's built-in Bluetooth radio directly; no virtual machine app on Apple Silicon can. For Bluetooth inside the guest itself (pairing devices from Linux, for example), a USB Bluetooth adapter given to the machine will work once USB devices are available.
+
+### Reaching services inside a machine
+
+Machines on **Shared (NAT)** networking can reach the internet, your Mac and each other. To reach a server running inside a machine from your Mac or other devices on your network, add a **port forward** in the machine's settings → Network: traffic to that port on your Mac goes to the port inside the guest. For example, forward 2222 to 22 and connect with `ssh -p 2222 user@your-mac`. Forwards work for every system and start with the machine. The first time, macOS may ask whether Orbit can accept incoming connections; allow it for devices on your network to connect.
+
+**Bridged** networking, where the machine appears on your network as a device of its own, needs an entitlement Apple grants separately and isn't available in this build.
+
 ### Running Intel Linux apps with Rosetta
 
 Native Linux machines can run x86-64 Linux programs through Rosetta. Turn on **Rosetta for Linux** in the machine's settings, then in the guest:
@@ -198,15 +230,28 @@ The microphone is off by default. When you turn it on, macOS asks you once wheth
 
 Windows runs through QEMU with hardware acceleration.
 
+Windows 11 on ARM runs on every Apple Silicon Mac (M1 and later). A Mac with 8 GB of memory can run it with 4 GB.
+
 1. Install QEMU when Orbit asks (or in Settings → Engines). Orbit installs it with Homebrew.
-2. Download the **Windows 11 ARM64** ISO from [Microsoft](https://www.microsoft.com/software-download/windows11arm64).
-3. Create a **Windows 11** machine and choose that ISO.
+2. Choose **New → Windows 11** and click **Download Windows 11 from Microsoft…**. Microsoft's own download page opens inside Orbit. Choose a language, click **Confirm**, then click the download button. Orbit takes over from there. (Already have the ISO? Choose it under **Or use an ISO on this Mac**.)
+3. Give the machine at least 4 GB of memory and 64 GB of disk. The disk only uses space as Windows writes.
+4. Click **Create**. Orbit downloads Windows (about 5 GB) with progress on the machine's page, checks it against the checksums Microsoft publishes, adds the drivers Windows needs (downloaded once, about 900 MB, verified), and starts the machine.
+
+Orbit takes care of the rest:
+
+- **Booting the installer.** Orbit answers *Press any key to boot from CD or DVD* for you on the first start. It never does on later starts, so setup's own restarts can't begin it again.
+- **Drivers.** A small *Orbit Windows Drivers* disc is attached next to the installer. Setup installs the network, memory and other drivers from it before it asks for a network, so it goes online like on a PC. Every setup page (language, edition, disk, account) still shows as usual.
+- **Requirements.** Setup is told not to require a TPM chip or Secure Boot, so nothing else needs installing. If you install `swtpm` yourself (`brew install swtpm`) before creating the machine, it gets an emulated TPM 2.0 chip, which Windows features like BitLocker use.
+
+When Windows is set up, eject the installer from the machine's page. That removes the drivers disc too; the drivers are already installed.
+
+If the network still doesn't appear (for example, you added the installer after creating the machine), setup offers **I don't have internet** so you can finish offline. Then attach the [VirtIO drivers](https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso) as the installer, and in **Device Manager** update the driver of each device with a warning sign from the CD drive.
 
 Notes:
 
-- Windows 11 requires a TPM. Orbit adds one automatically when `swtpm` is installed (it's installed along with QEMU).
-- If setup insists on an internet connection, press **Shift-F10** and run `OOBE\BYPASSNRO`. The machine restarts and offers to continue offline.
-- For networking and better graphics after installation, install the [VirtIO drivers for Windows](https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso) inside Windows (use the ARM64 drivers).
+- **Keep Windows on a fast disk.** On your Mac's internal SSD or a fast external SSD, setup takes about 20 minutes. On a slow USB drive it can take hours.
+- **Screen size.** Windows runs at 800 × 600 in a window you can resize; the picture is scaled to fit. A sharper, adjustable resolution needs a display device the standard QEMU doesn't offer yet.
+- After setup, Windows starts straight from its disk even if the installer is still attached.
 - QEMU machines open in their own window and can't be suspended to disk. Shut them down normally.
 
 ---
@@ -240,6 +285,7 @@ Everything Orbit keeps on your Mac (also shown in **Settings → Storage**, with
 | What | Where |
 |---|---|
 | Your machines and downloaded installers | `~/Library/Application Support/Orbit/Virtual Machines` (or the location you chose) |
+| Machines you chose to keep elsewhere | Only the folders you picked for them. Each holds everything its machine uses |
 | Settings | `~/Library/Preferences/com.orbitvm.Orbit.plist` |
 | Update cache | `~/Library/Caches/com.orbitvm.Orbit` |
 | Temporary files while machines run | Your private temporary folder, removed when they stop |
@@ -254,7 +300,7 @@ See [SECURITY.md](../SECURITY.md) for the full security model.
 
 1. Quit Orbit.
 2. Drag **Orbit** from Applications to the Trash.
-3. To remove your machines too, delete the library folder (Settings → Storage → Show in Finder shows where it is).
+3. To remove your machines too, delete the library folder (Settings → Storage → Show in Finder shows where it is), and any machines listed under **Settings → Storage → Kept elsewhere**. The easiest way is to delete them in Orbit first.
 4. Optionally remove the settings and update cache:
 
    ```sh
@@ -262,7 +308,7 @@ See [SECURITY.md](../SECURITY.md) for the full security model.
    rm -r ~/Library/Caches/com.orbitvm.Orbit
    ```
 
-If you installed QEMU through Orbit, remove it with `brew uninstall qemu swtpm`.
+If you installed QEMU through Orbit, remove it with `brew uninstall qemu` (and `swtpm`, if you installed it).
 
 ---
 
@@ -284,9 +330,15 @@ If you installed QEMU through Orbit, remove it with `brew uninstall qemu swtpm`.
 
 **"Library Unavailable".** Your library is on a drive that isn't connected. Connect it and Orbit reloads automatically, or choose another location in Settings → General.
 
+**"… is on a drive that isn't connected."** A machine you keep outside the library is on a drive that isn't plugged in. Connect it and the machine comes back. If the drive is gone for good, choose **Forget** in Settings → Storage.
+
+**"This machine has a TPM chip, which needs swtpm."** The machine was created with an emulated TPM. Run `brew install swtpm` in Terminal. If Windows isn't installed on it yet, you can turn the TPM off in its settings instead.
+
 **"Couldn't resume the saved session, so the machine started fresh."** The machine's hardware settings changed since it was suspended, or macOS was updated. The guest started normally; unsaved work from the suspended session is gone.
 
-**No network in Windows.** Install the VirtIO drivers ([see above](#windows-11-on-arm)).
+**No network in Windows.** Machines created with their installer get the drivers during setup. Otherwise add them yourself ([see above](#windows-11-on-arm)).
+
+**Windows setup starts over after a restart.** Press no key at *Press any key to boot from CD or DVD* during setup's restarts. Once Windows is installed, eject the installer.
 
 **Keyboard shortcuts go to macOS instead of the guest.** Turn on the ⌘ button in the machine window's toolbar.
 

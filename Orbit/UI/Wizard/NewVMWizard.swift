@@ -80,6 +80,11 @@ struct NewVMWizard: View {
         } else if let template = OSTemplate.template(id: initialTemplateID) {
             draft = VMDraft(template: template, name: library.uniqueName(template.name))
         }
+        #if DEBUG
+        if let folder = UserDefaults.standard.string(forKey: "OrbitWizardLocation") {
+            draft?.location = URL(fileURLWithPath: folder, isDirectory: true)
+        }
+        #endif
     }
 
     /// Pre-filled draft for a file dropped on Orbit or opened from Finder.
@@ -183,14 +188,68 @@ private struct ConfigureStep: View {
     @State private var isPickingInstaller = false
     @State private var isPickingDisk = false
     @State private var isPickingFolder = false
+    @State private var isShowingMicrosoft = false
     @State private var fileProblem: String?
 
     private var maxDiskGiB: Int {
-        let free = HostInfo.freeSpaceBytes(at: library.rootURL).map { Int($0 / 1_073_741_824) } ?? 2048
+        let free = HostInfo.freeSpaceBytes(at: location).map { Int($0 / 1_073_741_824) } ?? 2048
         return max(16, min(4096, free * 4)) // sparse images can be bigger than free space
     }
 
     private var isMac: Bool { draft.guestOS == .macOS }
+
+    /// Where the machine will be kept: the folder the user chose, or the library.
+    private var location: URL { draft.location ?? library.rootURL }
+
+    private var locationSection: some View {
+        Section {
+            LabeledContent {
+                HStack {
+                    if draft.location != nil {
+                        Button("Use Library") { draft.location = nil }.buttonStyle(.borderless)
+                    }
+                    Button("Choose…") { chooseLocation() }
+                }
+            } label: {
+                Text(draft.location?.lastPathComponent ?? "Orbit library")
+                Text((location.path as NSString).abbreviatingWithTildeInPath)
+                    .lineLimit(1).truncationMode(.head)
+            }
+            if let free = HostInfo.freeSpaceBytes(at: location) {
+                LabeledContent("Free space", value: free.formattedBytes)
+            }
+        } header: {
+            Text("Location")
+        } footer: {
+            Text(locationFooter)
+        }
+    }
+
+    private var locationFooter: String {
+        var text = draft.installer == .download
+            ? "The machine and the installer it downloads are kept here."
+            : "Everything the machine uses is kept here."
+        if !HostInfo.supportsCloning(at: location) {
+            text += " This drive isn't APFS, so snapshots and duplicates make full copies."
+        }
+        if draft.location != nil {
+            text += " If the drive is disconnected, the machine reappears when you connect it again."
+        }
+        return text
+    }
+
+    private func chooseLocation() {
+        guard let folder = VMActions.chooseFolder(message: "Choose where to keep “\(draft.name)”, on this Mac or another drive.",
+                                                  prompt: "Choose", startingAt: draft.location) else { return }
+        do {
+            try library.validateLocation(folder)
+            draft.location = folder.standardizedFileURL.path == library.rootURL.standardizedFileURL.path ? nil : folder
+            fileProblem = nil
+            draft.diskGiB = min(draft.diskGiB, maxDiskGiB)
+        } catch {
+            fileProblem = error.localizedDescription
+        }
+    }
 
     var body: some View {
         Form {
@@ -215,6 +274,11 @@ private struct ConfigureStep: View {
             }
             if draft.existingDisk == nil || !isMac {
                 installerSection
+            }
+            if let note = draft.template.firstBootNote, draft.template.id == "rocky" || draft.template.id == "alma" {
+                Section {
+                    Label(note, systemImage: "clock").font(.callout).foregroundStyle(.secondary)
+                }
             }
             if let fileProblem {
                 Section {
@@ -255,6 +319,8 @@ private struct ConfigureStep: View {
                 }
             }
 
+            locationSection
+
             Section("Extras") {
                 if draft.guestOS == .linux && draft.engine == .apple {
                     Toggle(isOn: $draft.rosetta) {
@@ -286,6 +352,11 @@ private struct ConfigureStep: View {
             }
         }
         .formStyle(.grouped)
+        .sheet(isPresented: $isShowingMicrosoft) {
+            if case .microsoft(let page) = draft.template.source {
+                MicrosoftDownloadSheet(page: page) { draft.installer = .microsoft($0) }
+            }
+        }
         .fileImporter(isPresented: $isPickingInstaller, allowedContentTypes: FileInspector.openPanelTypes) { result in
             if case .success(let url) = result { useInstaller(url) }
         }
@@ -401,6 +472,34 @@ private struct ConfigureStep: View {
                     Label("Get the \(draft.template.name) image from the official site", systemImage: "arrow.up.right.square")
                 }
                 fileRow
+            case .microsoft:
+                if case .microsoft(let windows) = draft.installer {
+                    LabeledContent("Windows 11") {
+                        HStack {
+                            Text(windows.fileName).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                            Button("Change…") { isShowingMicrosoft = true }
+                        }
+                    }
+                    Text("Downloaded from Microsoft when you click Create\(windows.hashes.isEmpty ? "" : ", and checked against the checksums Microsoft publishes").")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if localURL != nil {
+                    fileRow
+                } else {
+                    Button {
+                        isShowingMicrosoft = true
+                    } label: {
+                        Label("Download Windows 11 from Microsoft…", systemImage: "arrow.down.circle")
+                    }
+                    LabeledContent("Or use an ISO on this Mac") {
+                        Button("Choose…") { isPickingInstaller = true }
+                    }
+                }
+                if draft.guestOS == .windows && draft.architecture == .arm64 {
+                    Label("Orbit adds the drivers Windows needs for networking, so setup goes online by itself. They're downloaded once (about 900 MB) and verified.",
+                          systemImage: "checkmark.shield")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             case .custom:
                 fileRow
             }
@@ -431,6 +530,8 @@ extension VMDraft {
     var isValid: Bool {
         guard !name.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
         if guestOS == .macOS, installer == .none { return false }
+        // nothing to install Windows from yet
+        if case .microsoft = template.source, installer == .none { return false }
         if engine == .qemu && !HostInfo.isQEMUInstalled { return false }
         if let format = existingDiskFormat, format.needsQEMUImg(for: engine), HostInfo.qemuImg().map({ FileManager.default.isExecutableFile(atPath: $0.path) }) != true {
             return false

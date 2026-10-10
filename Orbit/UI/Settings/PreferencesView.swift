@@ -82,6 +82,35 @@ private struct StoragePreferences: View {
                 Text("Disks only use space for what guests have written. Installers are kept so the next machine starts faster.")
             }
 
+            let elsewhere = library.vms.filter { library.isOutsideLibrary($0) }
+            if !elsewhere.isEmpty || !library.unreachableMachines.isEmpty {
+                Section {
+                    ForEach(elsewhere) { vm in
+                        LabeledContent {
+                            Button("Show") { library.revealInFinder(vm) }
+                        } label: {
+                            Text(vm.config.name)
+                            Text((vm.bundle.url.path as NSString).abbreviatingWithTildeInPath)
+                                .lineLimit(1).truncationMode(.middle)
+                        }
+                    }
+                    ForEach(library.unreachableMachines, id: \.self) { url in
+                        LabeledContent {
+                            Button("Forget") { library.forgetUnreachable(url) }
+                                .help("Stop listing it. Its files aren't touched, and you can import the package again later.")
+                        } label: {
+                            Text(url.deletingPathExtension().lastPathComponent)
+                            Text("Not connected · \((url.path as NSString).abbreviatingWithTildeInPath)")
+                                .lineLimit(1).truncationMode(.middle)
+                        }
+                    }
+                } header: {
+                    Text("Kept elsewhere")
+                } footer: {
+                    Text("Machines you chose to keep in another folder or drive. Choose Move… from a machine's menu to change where it's kept.")
+                }
+            }
+
             Section {
                 if let leftovers {
                     if leftovers.isEmpty {
@@ -114,6 +143,7 @@ private struct StoragePreferences: View {
 
             Section("What Orbit stores") {
                 StorageRow(symbol: "folder", title: "Library", detail: library.rootURL.path(percentEncoded: false))
+                StorageRow(symbol: "externaldrive", title: "Elsewhere", detail: "Only the folders you choose for a machine, which then holds everything that machine uses")
                 StorageRow(symbol: "gearshape", title: "Settings", detail: "~/Library/Preferences/com.orbitvm.Orbit.plist")
                 StorageRow(symbol: "clock.arrow.circlepath", title: "Update cache", detail: "~/Library/Caches/com.orbitvm.Orbit")
                 StorageRow(symbol: "hourglass", title: "While running", detail: "Temporary files in your private temp folder, removed when machines stop")

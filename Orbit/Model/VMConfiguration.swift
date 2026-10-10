@@ -129,6 +129,8 @@ struct DiskConfiguration: Codable, Identifiable, Hashable {
     var isRemovable = false
 
     var isExternal: Bool { path.hasPrefix("/") }
+    /// The drivers disc Orbit builds for Windows guests (see `WindowsDrivers`).
+    var isDriversDisc: Bool { (path as NSString).lastPathComponent == WindowsDrivers.discName }
 }
 
 enum NetworkMode: String, Codable, CaseIterable, Identifiable {
@@ -160,7 +162,7 @@ struct NetworkConfiguration: Codable, Hashable {
     var mode: NetworkMode = .nat
     var macAddress: String = NetworkConfiguration.randomMACAddress()
     var bridgeInterface: String?
-    /// QEMU user networking only.
+    /// Mac ports forwarded to the guest (shared networking, both engines).
     var portForwards: [PortForward] = []
 
     /// Locally administered unicast address, same scheme as VZMACAddress.randomLocallyAdministered().
@@ -241,7 +243,7 @@ struct QEMUOptions: Codable, Hashable {
     var extraArguments: [String] = []
     /// Translation-block cache for TCG, in MiB.
     var tcgCacheMiB = 512
-    /// Expose a TPM 2.0 emulator (requires swtpm installed).
+    /// Expose a TPM 2.0 emulator (requires swtpm installed; optional for Windows guests).
     var tpm = false
 }
 
@@ -282,7 +284,9 @@ struct VMConfiguration: Codable, Identifiable, Hashable {
     var lastRunAt: Date?
 
     var primaryDisk: DiskConfiguration? { disks.first { !$0.isRemovable } }
-    var installerMedia: DiskConfiguration? { disks.first { $0.isRemovable } }
+    var installerMedia: DiskConfiguration? { disks.first { $0.isRemovable && !$0.isDriversDisc } }
+    /// The VirtIO drivers disc Orbit adds next to a Windows installer.
+    var driversDisc: DiskConfiguration? { disks.first { $0.isRemovable && $0.isDriversDisc } }
 
     var totalDiskGiB: Int { disks.filter { !$0.isRemovable }.reduce(0) { $0 + $1.sizeGiB } }
 

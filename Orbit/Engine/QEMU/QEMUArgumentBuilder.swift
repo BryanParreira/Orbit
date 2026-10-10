@@ -7,6 +7,9 @@ struct QEMUArgumentBuilder {
     let qmpSocket: String
     let dataDirectory: URL
     var tpmSocket: String?
+    /// Start from the installer before the disk. The backend turns this off once Windows is on
+    /// the disk, so a still-attached installer doesn't ask "Press any key" on every start.
+    var bootsFromInstaller = true
     var overlayDirectory: URL?
 
     var efiVariablesURL: URL { bundle.url.appendingPathComponent("EFIVariables.fd") }
@@ -36,15 +39,27 @@ struct QEMUArgumentBuilder {
         }
         args += ["-smp", "cpus=\(config.cpuCount),sockets=1,cores=\(config.cpuCount),threads=1"]
         args += ["-m", "\(config.memoryMiB)"]
+        // Windows keeps the hardware clock in local time; others use UTC
+        if config.guestOS == .windows {
+            args += ["-rtc", "base=localtime"]
+        }
 
         // UEFI firmware
         args += ["-drive", "if=pflash,format=raw,unit=0,readonly=on,file=\(q(firmwareCodeURL().path))"]
         args += ["-drive", "if=pflash,format=raw,unit=1,file=\(q(resolve(efiVariablesURL).path))"]
 
         // Display: QEMU's native Cocoa window with HiDPI scaling
-        args += ["-display", "cocoa,zoom-to-fit=on,zoom-interpolation=on,show-cursor=on"]
+        #if DEBUG
+        // self-tests: QEMU's window activates itself, which would send the user's typing to the guest
+        let headless = UserDefaults.standard.bool(forKey: "OrbitHeadlessQEMU")
+        #else
+        let headless = false
+        #endif
+        args += ["-display", headless ? "none" : "cocoa,zoom-to-fit=on,zoom-interpolation=on,show-cursor=on"]
         switch (config.guestOS, isArm) {
-        case (.windows, true): args += ["-device", "ramfb"]
+        // Windows, FreeBSD and other non-Linux ARM systems draw their console on the firmware's
+        // linear framebuffer: virtio-gpu has none, so their screen would freeze at the boot logo
+        case (.windows, true), (.other, true): args += ["-device", "ramfb"]
         case (_, true): args += ["-device", "virtio-gpu-pci"]
         case (.linux, false): args += ["-device", "virtio-vga"]
         default: args += ["-vga", "std"]
@@ -67,7 +82,8 @@ struct QEMUArgumentBuilder {
             index += 1
             if disk.isRemovable {
                 args += ["-drive", "if=none,id=\(id),media=cdrom,readonly=on,file=\(q(url.path))"]
-                let boot = config.bootFromInstaller ? ",bootindex=0" : ""
+                // only the installer boots; a drivers disc next to it is just data
+                let boot = bootsFromInstaller && disk.id == config.installerMedia?.id ? ",bootindex=0" : ""
                 if isArm {
                     args += ["-device", "usb-storage,bus=xhci.0,drive=\(id),removable=on\(boot)"]
                 } else {
@@ -114,7 +130,9 @@ struct QEMUArgumentBuilder {
         // TPM 2.0 (Windows 11)
         if let tpmSocket {
             args += ["-chardev", "socket,id=chrtpm,path=\(q(tpmSocket))", "-tpmdev", "emulator,id=tpm0,chardev=chrtpm"]
-            args += ["-device", isArm ? "tpm-tis-device,tpmdev=tpm0" : "tpm-tis,tpmdev=tpm0"]
+            // ppi=off on ARM: its small RAM window isn't page-aligned for Apple Silicon's 16 KB pages,
+            // and HVF refuses to map it (HV_BAD_ARGUMENT). Physical presence is a PC feature anyway.
+            args += ["-device", isArm ? "tpm-tis-device,tpmdev=tpm0,ppi=off" : "tpm-tis,tpmdev=tpm0"]
         }
 
         // Control channel

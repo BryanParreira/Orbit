@@ -24,6 +24,8 @@ Please report security problems privately through [GitHub Security Advisories](h
 
 - Guest systems are downloaded only over HTTPS from each project's official server.
 - Every image is verified against the SHA-256 checksum the project publishes. Verification fails closed: an image that doesn't match is deleted, and an image whose checksum can't be fetched isn't used.
+- Windows is downloaded from the link Microsoft's own download page hands out, shown inside Orbit in a private browser view that keeps nothing afterwards. Orbit accepts only HTTPS links on microsoft.com, and checks the image against the SHA-256 checksums that page lists.
+- The VirtIO drivers for Windows guests come from the [virtio-win](https://github.com/virtio-win/virtio-win-pkg-scripts) project over HTTPS. The project publishes no checksum for its ISO, so Orbit pins one exact release by its SHA-256 and refuses anything else. Only the driver files are taken from it. The answer file and install script on the drivers disc are written by Orbit, run only inside the Windows guest during its setup, and don't set accounts, product keys or disk layout. Windows also checks each driver's signature before installing it.
 - macOS restore images come from Apple's catalog and are verified by macOS during installation.
 
 ### Protecting your Mac

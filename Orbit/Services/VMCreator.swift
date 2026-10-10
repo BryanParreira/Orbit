@@ -7,6 +7,8 @@ struct VMDraft {
         /// Fetch the newest image for the template (distro mirror or Apple).
         case download
         case local(URL)
+        /// A Windows image from Microsoft's download page.
+        case microsoft(MicrosoftDownload)
         case none
     }
 
@@ -27,6 +29,8 @@ struct VMDraft {
     /// Boot an existing disk image instead of creating a blank one.
     var existingDisk: URL?
     var existingDiskFormat: DiskFormat?
+    /// Folder to keep the machine in, when not the library (another drive, for example).
+    var location: URL?
 
     init(template: OSTemplate, name: String) {
         self.template = template
@@ -40,7 +44,7 @@ struct VMDraft {
         rosetta = template.recommendsRosetta && HostInfo.rosettaAvailability != .notSupported
         switch template.source {
         case .macOSRestoreImage, .resolver: installer = .download
-        case .manual, .custom: installer = .none
+        case .manual, .microsoft, .custom: installer = .none
         }
     }
 }
@@ -59,8 +63,8 @@ enum VMCreator {
             config.sharedFolders = [SharedFolder(path: folder.path)]
         }
         if draft.guestOS == .windows {
-            // Windows 11 setup wants a TPM 2.0; emulate one when swtpm is installed
-            config.qemu.tpm = HostInfo.qemuSearchPaths.contains { FileManager.default.isExecutableFile(atPath: "\($0)/swtpm") }
+            // a TPM 2.0 when swtpm happens to be installed; otherwise setup is told not to require one
+            config.qemu.tpm = HostInfo.swtpm != nil
         }
         if draft.guestOS == .macOS {
             config.display = DisplayConfiguration(widthPixels: 2880, heightPixels: 1800, pixelsPerInch: 224, dynamicResolution: true)
@@ -68,7 +72,10 @@ enum VMCreator {
             config.display = DisplayConfiguration(widthPixels: 1920, heightPixels: 1200, pixelsPerInch: 144, dynamicResolution: true)
         }
 
-        let bundle = try library.makeBundle(named: config.name)
+        if let location = draft.location {
+            try library.validateLocation(location)
+        }
+        let bundle = try library.makeBundle(named: config.name, in: draft.location)
         do {
             if draft.existingDisk == nil {
                 let diskID = UUID()
@@ -126,7 +133,13 @@ enum VMCreator {
                 vm.config.memoryMiB = max(vm.config.memoryMiB, minimum.memoryMiB)
                 vm.saveNow()
                 // a cancelled install reports no error, so ask whether it actually finished
-                if await vm.installMacOS(from: ipsw), draft.startWhenReady {
+                let installed = await vm.installMacOS(from: ipsw)
+                if installed, ipsw.deletingLastPathComponent().standardizedFileURL.path == vm.bundle.url.standardizedFileURL.path {
+                    // downloaded into the machine itself (it lives outside the library): no longer needed
+                    try? FileManager.default.removeItem(at: ipsw)
+                    try? FileManager.default.removeItem(at: VMLibrary.verificationMarker(for: ipsw))
+                }
+                if installed, draft.startWhenReady {
                     await vm.start()
                 }
             } else {
@@ -138,10 +151,25 @@ enum VMCreator {
                     if let checksum = resolved.checksumURL {
                         vm.installStatus = "Verifying \(draft.template.name) \(resolved.version)…"
                         vm.installProgress = nil
-                        try await ChecksumVerifier.verify(iso, against: checksum)
+                        try await ChecksumVerifier.verify(iso, against: checksum) { fraction in
+                            Task { @MainActor in vm.installProgress = fraction }
+                        }
+                        vm.installProgress = nil
                     }
                     vm.attachInstaller(iso)
                     vm.saveNow()
+                }
+                if case .microsoft(let windows) = draft.installer {
+                    vm.installStatus = "Downloading Windows 11"
+                    let iso = try await download(windows.url, into: library, for: vm)
+                    vm.installStatus = "Verifying Windows 11…"
+                    vm.installProgress = nil
+                    try await verifyMicrosoftImage(iso, against: windows.hashes, for: vm)
+                    vm.attachInstaller(iso)
+                    vm.saveNow()
+                }
+                if draft.guestOS == .windows, draft.architecture == .arm64, draft.engine == .qemu, vm.config.installerMedia != nil {
+                    try await addWindowsDrivers(to: vm, library: library)
                 }
                 vm.installStatus = nil
                 vm.installProgress = nil
@@ -157,8 +185,54 @@ enum VMCreator {
         vm.activeDownload = nil
     }
 
+    /// The image must be one Microsoft lists on its page (when the page lists any; the link
+    /// itself is Microsoft's own HTTPS server). Fails closed: a mismatch is deleted.
+    private static func verifyMicrosoftImage(_ iso: URL, against hashes: Set<String>, for vm: VMInstance) async throws {
+        guard !hashes.isEmpty else { return }
+        let marker = VMLibrary.verificationMarker(for: iso)
+        if let recorded = try? String(contentsOf: marker, encoding: .utf8), hashes.contains(recorded) { return }
+        let actual = try await ChecksumVerifier.sha256(of: iso) { fraction in
+            Task { @MainActor in vm.installProgress = fraction }
+        }
+        vm.installProgress = nil
+        guard hashes.contains(actual) else {
+            try? FileManager.default.removeItem(at: iso)
+            throw ChecksumVerifier.Failure.mismatch(iso.lastPathComponent)
+        }
+        try? actual.write(to: marker, atomically: true, encoding: .utf8)
+    }
+
+    /// Windows on ARM has no drivers for QEMU's virtual network card and other devices; give
+    /// setup a disc it installs them from by itself. Not fatal: Windows still installs without it.
+    private static func addWindowsDrivers(to vm: VMInstance, library: VMLibrary) async throws {
+        vm.installStatus = "Downloading Windows drivers"
+        do {
+            let disc = try await WindowsDrivers.prepareDisc(in: vm.bundle.url, cache: library.installersURL) { url in
+                let file = try await download(url, into: library, for: vm)
+                vm.installStatus = "Preparing Windows drivers…"
+                vm.installProgress = nil
+                return file
+            }
+            vm.attachDriversDisc(disc)
+            vm.saveNow()
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
+            throw error
+        } catch {
+            // still give setup the answer file: no TPM required, and it can finish offline
+            if let disc = try? await WindowsDrivers.answerOnlyDisc(in: vm.bundle.url) {
+                vm.attachDriversDisc(disc)
+                vm.saveNow()
+            }
+            vm.lastError = "Windows will install, but without network until it has drivers: \(ErrorMessages.message(for: error) ?? error.localizedDescription) The user guide explains how to add them."
+        }
+    }
+
     private static func download(_ url: URL, into library: VMLibrary, for vm: VMInstance) async throws -> URL {
-        let task = DownloadTask(source: url, destination: library.installersURL.appendingPathComponent(url.lastPathComponent))
+        // a machine the user put somewhere else keeps its installer with it, on the drive they chose
+        let folder = library.isOutsideLibrary(vm) ? vm.bundle.url : library.installersURL
+        let task = DownloadTask(source: url, destination: folder.appendingPathComponent(url.lastPathComponent))
         vm.activeDownload = task
         defer { vm.activeDownload = nil }
         return try await task.run()

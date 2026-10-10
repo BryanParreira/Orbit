@@ -1,7 +1,8 @@
 import AppKit
 import Observation
 
-/// All virtual machines Orbit knows about, stored as `.orbitvm` packages in one folder.
+/// All virtual machines Orbit knows about, stored as `.orbitvm` packages in the library folder or,
+/// when the user chose so, in a folder of their own (another drive, for example).
 @Observable
 @MainActor
 final class VMLibrary {
@@ -11,6 +12,8 @@ final class VMLibrary {
     private(set) var rootURL: URL
     /// Set when the library folder can't be reached (e.g. its external drive is unplugged).
     private(set) var isRootUnavailable = false
+    /// Machines kept outside the library whose drive or folder can't be reached right now.
+    private(set) var unreachableMachines: [URL] = []
 
     var installersURL: URL { rootURL.appendingPathComponent("Installers", isDirectory: true) }
     var runningCount: Int { vms.filter { $0.state.isActive }.count }
@@ -27,7 +30,11 @@ final class VMLibrary {
             rootURL = Self.defaultRootURL
         }
         AppleBackend.removeStaleOverlays()
-        reload()
+        // the library first; machines on other drives after the window is up: reading a
+        // removable drive waits for the user to allow it, and that must not freeze launch
+        reload(includeElsewhere: false)
+        trackActivity()
+        loadElsewhereInBackground()
         // a library on an external drive comes back when the drive is reconnected
         for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification] {
             NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { _ in
@@ -36,18 +43,64 @@ final class VMLibrary {
         }
     }
 
+    // MARK: - Staying awake
+
+    @ObservationIgnored private var activity: (options: ProcessInfo.ActivityOptions, token: NSObjectProtocol)?
+
+    /// Keep macOS from napping Orbit while it works in the background: App Nap would throttle
+    /// the timers that pause machines before the disk fills, and stall downloads and installs.
+    /// Running machines still let an idle Mac sleep; downloads and installs keep it awake.
+    private func trackActivity() {
+        withObservationTracking {
+            updateActivity()
+        } onChange: {
+            Task { @MainActor in VMLibrary.shared.trackActivity() }
+        }
+    }
+
+    private func updateActivity() {
+        let busy = vms.contains { $0.installStatus != nil || $0.activeDownload != nil }
+        let running = vms.contains { $0.state.isActive }
+        let wanted: ProcessInfo.ActivityOptions? = busy ? .userInitiated : running ? .userInitiatedAllowingIdleSystemSleep : nil
+        guard wanted != activity?.options else { return }
+        if let activity { ProcessInfo.processInfo.endActivity(activity.token) }
+        activity = wanted.map { options in
+            let reason = busy ? "Downloading or installing a virtual machine" : "Running virtual machines"
+            return (options, ProcessInfo.processInfo.beginActivity(options: options, reason: reason))
+        }
+    }
+
     func vm(with id: UUID) -> VMInstance? {
         vms.first { $0.id == id }
     }
 
-    func reload() {
+    /// Read each machine kept elsewhere once off the main thread (where macOS may hold the read
+    /// until the user answers its removable-drive prompt), then list them.
+    private func loadElsewhereInBackground() {
+        let paths = externalLocations
+        guard !paths.isEmpty else { return }
+        Task.detached(priority: .userInitiated) {
+            for path in paths {
+                _ = FileManager.default.contents(atPath: (path as NSString).appendingPathComponent("config.json"))
+            }
+            await MainActor.run { VMLibrary.shared.reload() }
+        }
+    }
+
+    func reload(includeElsewhere: Bool = true) {
         try? FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
         var isDirectory: ObjCBool = false
         isRootUnavailable = !(FileManager.default.fileExists(atPath: rootURL.path, isDirectory: &isDirectory) && isDirectory.boolValue
             && FileManager.default.isWritableFile(atPath: rootURL.path))
-        let urls = (try? FileManager.default.contentsOfDirectory(at: rootURL, includingPropertiesForKeys: nil)) ?? []
+        var urls = ((try? FileManager.default.contentsOfDirectory(at: rootURL, includingPropertiesForKeys: nil)) ?? [])
+            .filter { $0.pathExtension == VMBundle.fileExtension }
+        // no trailing "/": these must compare equal to package URLs built by appending a name
+        let elsewhere = includeElsewhere ? externalLocations.map { URL(filePath: $0, directoryHint: .notDirectory) } : []
+        unreachableMachines = elsewhere.filter { !FileManager.default.fileExists(atPath: $0.appendingPathComponent("config.json").path) }
+        let inLibrary = Set(urls.map(\.standardizedFileURL.path))
+        urls += elsewhere.filter { !unreachableMachines.contains($0) && !inLibrary.contains($0.standardizedFileURL.path) }
         var loaded: [VMInstance] = []
-        for url in urls where url.pathExtension == VMBundle.fileExtension {
+        for url in urls {
             // match by location (paths: listed folder URLs end in "/", others don't) and keep the
             // live instance, so a reload never creates a second copy of a machine
             if let existing = vms.first(where: { $0.bundle.url.standardizedFileURL.path == url.standardizedFileURL.path }) {
@@ -85,30 +138,159 @@ final class VMLibrary {
         reload()
     }
 
+    // MARK: - Locations
+
+    /// Package paths of machines kept outside the library folder.
+    private var externalLocations: [String] {
+        get { UserDefaults.standard.stringArray(forKey: PreferenceKey.machineLocations) ?? [] }
+        set { UserDefaults.standard.set(newValue, forKey: PreferenceKey.machineLocations) }
+    }
+
+    /// Whether `vm` lives outside the library folder, in a place the user chose.
+    func isOutsideLibrary(_ vm: VMInstance) -> Bool {
+        vm.bundle.url.deletingLastPathComponent().standardizedFileURL.path != rootURL.standardizedFileURL.path
+    }
+
+    /// Remember (or forget) a package that lives outside the library, so reloads find it.
+    private func track(_ url: URL) {
+        let path = url.standardizedFileURL.path
+        var paths = externalLocations.filter { $0 != path }
+        if url.deletingLastPathComponent().standardizedFileURL.path != rootURL.standardizedFileURL.path {
+            paths.append(path)
+        }
+        externalLocations = paths
+    }
+
+    private func untrack(_ url: URL) {
+        let path = url.standardizedFileURL.path
+        externalLocations = externalLocations.filter { $0 != path }
+    }
+
+    /// Stop listing a machine whose drive is gone. Its files, wherever they are, are left alone.
+    func forgetUnreachable(_ url: URL) {
+        untrack(url)
+        unreachableMachines.removeAll { $0.standardizedFileURL.path == url.standardizedFileURL.path }
+    }
+
+    /// Whether the machine package at `url` is on a drive or folder that can't be reached.
+    func isUnreachable(_ url: URL) -> Bool {
+        unreachableMachines.contains { $0.standardizedFileURL.path == url.standardizedFileURL.path }
+    }
+
+    /// Where a new machine's package goes: `folder` as chosen, or the library.
+    /// Refuses folders inside another machine and places Orbit can't write to.
+    func validateLocation(_ folder: URL) throws {
+        let path = folder.standardizedFileURL.path
+        if folder.pathComponents.contains(where: { $0.hasSuffix(".\(VMBundle.fileExtension)") }) {
+            throw VMError.invalidConfiguration("That folder is inside another machine. Choose a folder outside any .\(VMBundle.fileExtension) package.")
+        }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue,
+              FileManager.default.isWritableFile(atPath: path) else {
+            throw VMError.invalidConfiguration("Orbit can't save to \(folder.path(percentEncoded: false)). Choose a folder you can write to.")
+        }
+    }
+
+    /// Move a stopped machine to `folder`: a rename on the same drive, a copy then delete across drives.
+    /// Returns the machine at its new location (the old instance is replaced).
+    @discardableResult
+    func move(_ vm: VMInstance, to folder: URL) async throws -> VMInstance {
+        guard !vm.state.isActive, vm.installStatus == nil else {
+            throw VMError.invalidConfiguration("Shut down “\(vm.config.name)” before moving it.")
+        }
+        try validateLocation(folder)
+        let source = vm.bundle.url
+        if folder.standardizedFileURL.path == source.deletingLastPathComponent().standardizedFileURL.path { return vm }
+        vm.saveNow()
+        let destination = Self.uniquePackageURL(named: source.deletingPathExtension().lastPathComponent, in: folder)
+        let sameVolume = Self.volume(of: source) == Self.volume(of: folder)
+        if !sameVolume {
+            let needed = await Self.allocatedSize(of: source)
+            if let free = HostInfo.freeSpaceBytes(at: folder), free < needed + ResourceGuard.minimumFreeToStart {
+                throw VMError.invalidConfiguration("“\(vm.config.name)” uses \(needed.formattedBytes), but only \(free.formattedBytes) is free there. Free up space or choose another drive.")
+            }
+        }
+        vm.installStatus = sameVolume ? "Moving…" : "Copying to \(folder.lastPathComponent)…"
+        defer { vm.installStatus = nil }
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                if sameVolume {
+                    try FileManager.default.moveItem(at: source, to: destination)
+                } else {
+                    try Self.copyPackage(source, to: destination)
+                }
+            }.value
+        } catch {
+            if !sameVolume { try? FileManager.default.removeItem(at: destination) }
+            throw error
+        }
+        let bundle = VMBundle(url: destination)
+        var config = vm.config
+        Self.rebase(&config, from: source, to: destination)
+        try bundle.save(config)
+        if !sameVolume {
+            // the copy is complete and saved; only now remove the original
+            try? FileManager.default.removeItem(at: source)
+        }
+        untrack(source)
+        track(destination)
+        let moved = VMInstance(bundle: bundle, config: config)
+        if let index = vms.firstIndex(of: vm) { vms[index] = moved }
+        return moved
+    }
+
+    /// Paths in `config` that point inside the package (a downloaded installer) follow it to `new`.
+    private static func rebase(_ config: inout VMConfiguration, from old: URL, to new: URL) {
+        let prefix = old.standardizedFileURL.path + "/"
+        for index in config.disks.indices where config.disks[index].path.hasPrefix(prefix) {
+            config.disks[index].path = new.standardizedFileURL.path + "/" + config.disks[index].path.dropFirst(prefix.count)
+        }
+    }
+
+    /// Copy a package to another drive, keeping sparse disks sparse.
+    nonisolated private static func copyPackage(_ source: URL, to destination: URL) throws {
+        let flags = copyfile_flags_t(COPYFILE_ALL | COPYFILE_RECURSIVE | COPYFILE_CLONE | COPYFILE_DATA_SPARSE)
+        guard copyfile(source.path, destination.path, nil, flags) == 0 else {
+            throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: destination.path,
+                                                          NSUnderlyingErrorKey: POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)])
+        }
+    }
+
+    nonisolated private static func volume(of url: URL) -> URL? {
+        try? url.resourceValues(forKeys: [.volumeURLKey]).volume
+    }
+
     // MARK: - Creating
 
-    /// A fresh, uniquely named package directory.
-    func makeBundle(named name: String) throws -> VMBundle {
-        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    /// A fresh, uniquely named package directory, in the library or in `folder`.
+    func makeBundle(named name: String, in folder: URL? = nil) throws -> VMBundle {
+        let parent = folder ?? rootURL
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        let url = Self.uniquePackageURL(named: name, in: parent)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+        return VMBundle(url: url)
+    }
+
+    nonisolated private static func uniquePackageURL(named name: String, in parent: URL) -> URL {
         var safe = name.trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
         // no hidden or empty package names, and stay well under the file system's name limit
         while safe.hasPrefix(".") { safe.removeFirst() }
         if safe.isEmpty { safe = "Virtual Machine" }
         safe = String(safe.prefix(120))
-        var url = rootURL.appendingPathComponent(safe).appendingPathExtension(VMBundle.fileExtension)
+        var url = parent.appendingPathComponent(safe).appendingPathExtension(VMBundle.fileExtension)
         var n = 2
         while FileManager.default.fileExists(atPath: url.path) {
-            url = rootURL.appendingPathComponent("\(safe) \(n)").appendingPathExtension(VMBundle.fileExtension)
+            url = parent.appendingPathComponent("\(safe) \(n)").appendingPathExtension(VMBundle.fileExtension)
             n += 1
         }
-        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
-        return VMBundle(url: url)
+        return url
     }
 
     @discardableResult
     func register(bundle: VMBundle, config: VMConfiguration) throws -> VMInstance {
         try bundle.save(config)
+        track(bundle.url)
         let vm = VMInstance(bundle: bundle, config: config)
         vms.append(vm)
         return vm
@@ -172,6 +354,7 @@ final class VMLibrary {
             try? FileManager.default.removeItem(at: Self.verificationMarker(for: installer))
         }
         removeTemporaryFiles(of: vm)
+        untrack(vm.bundle.url)
         vms.removeAll { $0 == vm }
     }
 
@@ -237,6 +420,18 @@ final class VMLibrary {
                                       reason: "Temporary files from a machine that didn't stop cleanly."))
             }
         }
+        if !vms.contains(where: { $0.state == .installing || $0.installStatus != nil }) {
+            // Apple's macOS installer unpacks the restore image here (about 9 GB) and leaves it
+            // behind if the install is interrupted. Only stale ones: another app may be installing.
+            let temp = fm.temporaryDirectory
+            for item in (try? fm.contentsOfDirectory(at: temp, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+            where item.lastPathComponent.hasPrefix("com.apple.Virtualization.Installation.") {
+                let modified = (try? item.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantFuture
+                guard Date().timeIntervalSince(modified) > 2 * 3600 else { continue }
+                found.append(Leftover(url: item, bytes: await Self.allocatedSize(of: item),
+                                      reason: "Files from a macOS installation that was interrupted."))
+            }
+        }
         return found
     }
 
@@ -244,6 +439,7 @@ final class VMLibrary {
 
     nonisolated static func isOrbitTemporary(_ name: String) -> Bool {
         name.hasPrefix("orbit-disposable-")
+            || name.hasPrefix("orbit-drivers-")
             || name.wholeMatch(of: /orbit-[0-9A-F]{8}/) != nil
     }
 
@@ -263,7 +459,9 @@ final class VMLibrary {
         config.network.macAddress = NetworkConfiguration.randomMACAddress()
         config.createdAt = Date()
         config.lastRunAt = nil
-        let bundle = try makeBundle(named: config.name)
+        // beside the original, so the copy is an instant clone on the same drive
+        let bundle = try makeBundle(named: config.name, in: isOutsideLibrary(vm) ? vm.bundle.url.deletingLastPathComponent() : nil)
+        Self.rebase(&config, from: vm.bundle.url, to: bundle.url)
         do {
             let skip: Set<String> = ["config.json", "Snapshots", VMBundle(url: vm.bundle.url).savedStateURL.lastPathComponent]
             for item in try FileManager.default.contentsOfDirectory(atPath: vm.bundle.url.path) where !skip.contains(item) {

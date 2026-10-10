@@ -201,9 +201,12 @@ private struct PreviewView: View {
         } else {
             ZStack {
                 RadialGradient(colors: [Color.white.opacity(0.07), .clear], center: .center, startRadius: 0, endRadius: 420)
-                OSArtwork(config: vm.config, size: 76)
-                    .environment(\.colorScheme, .dark)
-                    .opacity(0.9)
+                // the progress card sits where the logo is; behind its glass the logo shows as a smudge
+                if vm.installStatus == nil && vm.state != .installing {
+                    OSArtwork(config: vm.config, size: 76)
+                        .environment(\.colorScheme, .dark)
+                        .opacity(0.9)
+                }
             }
         }
     }
@@ -262,7 +265,9 @@ private struct InstallProgressCard: View {
                 HStack {
                     Text("\(download.receivedBytes.formattedBytes) of \(download.expectedBytes > 0 ? download.expectedBytes.formattedBytes : "…")")
                     Spacer()
-                    if download.bytesPerSecond > 0 {
+                    if download.isReconnecting {
+                        Text("Connection dropped, reconnecting…")
+                    } else if download.bytesPerSecond > 0 {
                         Text("\(Int64(download.bytesPerSecond).formattedBytes)/s")
                     }
                     if let eta = download.etaSeconds {
@@ -305,6 +310,11 @@ private struct Banners: View {
                     Button("Discard") { vm.discardSavedState() }
                 }
             }
+            if vm.config.installerMedia != nil, vm.state == .running, vm.installStatus == nil,
+               let started = vm.startedAt, Date().timeIntervalSince(started) < 300,
+               let note = OSTemplate.template(id: vm.config.templateID)?.firstBootNote {
+                Banner(symbol: "clock", title: "Starting the installer", message: note, wraps: true) { EmptyView() }
+            }
             if let installer = vm.config.installerMedia, vm.installStatus == nil {
                 Banner(symbol: "opticaldisc", title: "Installer attached",
                        message: URL(fileURLWithPath: installer.path).lastPathComponent) {
@@ -318,6 +328,11 @@ private struct Banners: View {
                        message: "Install it from Settings → Engines, or run brew install qemu.") {
                     SettingsLink { Text("Settings") }
                 }
+            } else if vm.config.engine == .qemu && vm.config.qemu.tpm && HostInfo.swtpm == nil {
+                Banner(symbol: "shippingbox", title: "swtpm required",
+                       message: "This machine was set up with a TPM chip, which needs swtpm. Run brew install swtpm in Terminal.") {
+                    SettingsLink { Text("Settings") }
+                }
             }
         }
         items
@@ -328,6 +343,8 @@ private struct Banner<Actions: View>: View {
     let symbol: String
     let title: String
     let message: String
+    /// Longer explanations wrap instead of being cut off.
+    var wraps = false
     @ViewBuilder var actions: Actions
 
     var body: some View {
@@ -340,8 +357,9 @@ private struct Banner<Actions: View>: View {
             Text(message)
                 .font(.callout)
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
+                .lineLimit(wraps ? 4 : 1)
                 .truncationMode(.middle)
+                .fixedSize(horizontal: false, vertical: wraps)
             Spacer()
             actions.controlSize(.small)
         }
@@ -355,6 +373,16 @@ private struct Banner<Actions: View>: View {
 
 private struct OverviewGrid: View {
     let vm: VMInstance
+    @Environment(VMLibrary.self) private var library
+
+    private var drive: String {
+        (try? vm.bundle.url.resourceValues(forKeys: [.volumeLocalizedNameKey]).volumeLocalizedName) ?? "This Mac"
+    }
+
+    private var folder: String {
+        guard library.isOutsideLibrary(vm) else { return "Orbit library" }
+        return (vm.bundle.url.deletingLastPathComponent().path as NSString).abbreviatingWithTildeInPath
+    }
 
     var body: some View {
         let c = vm.config
@@ -375,6 +403,10 @@ private struct OverviewGrid: View {
                          detail: c.display.dynamicResolution ? "Follows window size" : "Fixed")
                 SpecTile(symbol: "bolt", caption: "Engine", value: c.engine == .apple ? "Apple Virtualization" : "QEMU",
                          detail: "\(c.diskPerformance.displayName) disk I/O")
+                SpecTile(symbol: "externaldrive", caption: "Location", value: drive, detail: folder)
+                    .contentShape(.rect)
+                    .onTapGesture { library.revealInFinder(vm) }
+                    .help("Show in Finder. To keep it somewhere else, choose Move… from the machine's menu.")
             }
         }
     }

@@ -8,6 +8,9 @@ enum InstallerSource: Hashable {
     case resolver(ISOResolver)
     /// No direct link (licensing); user picks a file, we link the official page.
     case manual(downloadPage: URL)
+    /// Microsoft's download page, shown inside Orbit: the user picks a language there and Orbit
+    /// downloads the link it hands out.
+    case microsoft(downloadPage: URL)
     /// Bring your own image.
     case custom
 }
@@ -53,7 +56,7 @@ struct OSTemplate: Identifiable, Hashable {
         // Compatibility: QEMU
         OSTemplate(id: "windows-arm", name: "Windows 11", subtitle: "ARM64 · via QEMU + HVF", guestOS: .windows, engine: .qemu, architecture: .arm64,
                    symbol: "square.grid.2x2.fill", defaultDiskGiB: 80,
-                   source: .manual(downloadPage: URL(string: "https://www.microsoft.com/software-download/windows11arm64")!)),
+                   source: .microsoft(downloadPage: URL(string: "https://www.microsoft.com/en-us/software-download/windows11arm64")!)),
         OSTemplate(id: "freebsd", name: "FreeBSD", subtitle: "ARM64 · via QEMU + HVF", guestOS: .other, engine: .qemu, architecture: .arm64,
                    symbol: "ladybug", defaultDiskGiB: 32, source: .resolver(.freeBSD)),
         OSTemplate(id: "emulated", name: "Emulated PC", subtitle: "x86-64 · any OS, slower", guestOS: .other, engine: .qemu, architecture: .x86_64,
@@ -62,6 +65,20 @@ struct OSTemplate: Identifiable, Hashable {
 
     static func template(id: String?) -> OSTemplate? {
         all.first { $0.id == id }
+    }
+
+    /// What the first start of the installer looks like, when it could be mistaken for a problem.
+    var firstBootNote: String? {
+        switch id {
+        case "rocky", "alma":
+            "The installer checks its own disc first, and the screen stays dark for up to 3 minutes before setup appears. That's normal. To skip the check, choose “Install \(name)…” in the first menu."
+        case "fedora", "ubuntu":
+            "The live desktop takes a minute or two to appear on the first start."
+        case "windows-arm":
+            "Orbit answers “Press any key to boot from CD” for you. Setup appears after about a minute."
+        default:
+            nil
+        }
     }
 }
 

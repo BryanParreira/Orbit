@@ -1,5 +1,6 @@
 import SwiftUI
 
+/// Offers to install QEMU through Homebrew.
 struct QEMUInstallPrompt: View {
     @State private var installer = QEMUInstaller.shared
     @State private var refresh = 0

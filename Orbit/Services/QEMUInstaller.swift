@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-/// Installs QEMU (and swtpm for Windows 11) through Homebrew without leaving Orbit.
+/// Installs QEMU through Homebrew without leaving Orbit.
 @Observable
 @MainActor
 final class QEMUInstaller {
@@ -23,7 +23,7 @@ final class QEMUInstaller {
         lastLine = "Starting Homebrew…"
         let process = Process()
         process.executableURL = brew
-        process.arguments = ["install", "qemu", "swtpm"]
+        process.arguments = ["install", "qemu"]
         var env = ProcessInfo.processInfo.environment
         env["HOMEBREW_NO_AUTO_UPDATE"] = "1"
         env["HOMEBREW_NO_INSTALL_CLEANUP"] = "1"

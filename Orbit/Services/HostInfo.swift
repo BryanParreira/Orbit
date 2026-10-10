@@ -77,6 +77,14 @@ enum HostInfo {
 
     static var isQEMUInstalled: Bool { qemuBinary(for: .arm64) != nil || qemuBinary(for: .x86_64) != nil }
 
+    /// swtpm, which emulates a TPM 2.0 chip. Optional: without it, Windows guests install
+    /// without a TPM (the drivers disc's answer file tells setup not to require one).
+    static var swtpm: URL? {
+        qemuSearchPaths.lazy
+            .map { URL(fileURLWithPath: $0).appendingPathComponent("swtpm") }
+            .first { FileManager.default.isExecutableFile(atPath: $0.path) }
+    }
+
     static var isHomebrewInstalled: Bool {
         FileManager.default.isExecutableFile(atPath: "/opt/homebrew/bin/brew") || FileManager.default.isExecutableFile(atPath: "/usr/local/bin/brew")
     }
@@ -104,6 +112,8 @@ enum HostInfo {
 
 enum PreferenceKey {
     static let libraryPath = "libraryPath"
+    /// Machines the user chose to keep outside the library folder (package paths).
+    static let machineLocations = "machineLocations"
     static let qemuDirectory = "qemuDirectory"
     static let showMenuBarExtra = "showMenuBarExtra"
     static let libraryLayout = "libraryLayout"

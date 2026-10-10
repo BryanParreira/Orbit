@@ -108,4 +108,20 @@ struct DeletionTests {
         #expect(!VMLibrary.isOrbitTemporary("orbit-something-else"))
         #expect(!VMLibrary.isOrbitTemporary("orbital-app-cache"))
     }
+
+    @Test func listsOnlyStaleInterruptedMacOSInstalls() async throws {
+        let temp = FileManager.default.temporaryDirectory
+        let stale = temp.appendingPathComponent("com.apple.Virtualization.Installation.orbittest\(UUID().uuidString.prefix(4))")
+        let fresh = temp.appendingPathComponent("com.apple.Virtualization.Installation.orbitfresh\(UUID().uuidString.prefix(4))")
+        for folder in [stale, fresh] {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try Data(repeating: 1, count: 4096).write(to: folder.appendingPathComponent("IpswExtract"))
+        }
+        defer { [stale, fresh].forEach { try? FileManager.default.removeItem(at: $0) } }
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-3 * 3600)], ofItemAtPath: stale.path)
+
+        let listed = await library.leftovers().map { $0.url.lastPathComponent }
+        #expect(listed.contains(stale.lastPathComponent), "an interrupted install hours ago")
+        #expect(!listed.contains(fresh.lastPathComponent), "possibly another app installing right now")
+    }
 }

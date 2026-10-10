@@ -11,6 +11,10 @@ final class DownloadTask {
     private(set) var expectedBytes: Int64 = 0
     private(set) var bytesPerSecond: Double = 0
     private(set) var isFinished = false
+    /// Times the connection dropped and the download picked up where it stopped.
+    private(set) var retries = 0
+    /// Waiting to retry after the connection dropped.
+    private(set) var isReconnecting = false
 
     var fraction: Double {
         expectedBytes > 0 ? Double(receivedBytes) / Double(expectedBytes) : 0
@@ -63,10 +67,7 @@ final class DownloadTask {
                 }
             }
         }
-        let temp: URL = try await withCheckedThrowingContinuation { continuation in
-            delegate.onFinish = { result in continuation.resume(with: result) }
-            session.downloadTask(with: source).resume()
-        }
+        let temp = try await downloadResuming(session: session, delegate: delegate)
         // never leave a multi-gigabyte partial download behind
         defer { try? FileManager.default.removeItem(at: temp) }
         try? FileManager.default.removeItem(at: destination)
@@ -76,7 +77,47 @@ final class DownloadTask {
     }
 
     func cancel() {
+        isCancelled = true
         session?.invalidateAndCancel()
+    }
+
+    @ObservationIgnored private var isCancelled = false
+
+    static let maximumRetries = 5
+
+    /// Mirrors drop long downloads now and then, and Wi-Fi blips. Pick up where the download
+    /// stopped (or start over when the server can't resume) instead of failing a 5 GB download at 90%.
+    private func downloadResuming(session: URLSession, delegate: Delegate) async throws -> URL {
+        var resumeData: Data?
+        while true {
+            // a cancelled session can't make new tasks (creating one raises an exception)
+            guard !isCancelled else { throw URLError(.cancelled) }
+            do {
+                return try await withCheckedThrowingContinuation { continuation in
+                    delegate.onFinish = { result in continuation.resume(with: result) }
+                    let task = resumeData.map { session.downloadTask(withResumeData: $0) } ?? session.downloadTask(with: source)
+                    task.resume()
+                }
+            } catch let error as URLError where Self.isTransient(error) && retries < Self.maximumRetries {
+                retries += 1
+                resumeData = error.downloadTaskResumeData
+                if resumeData == nil { receivedBytes = 0 }
+                bytesPerSecond = 0
+                // 4, 8, 16, 30, 30 seconds: long enough for Wi-Fi to come back
+                isReconnecting = true
+                defer { isReconnecting = false }
+                try await Task.sleep(for: .seconds(min(30, 2 << retries)))
+            }
+        }
+    }
+
+    nonisolated static func isTransient(_ error: URLError) -> Bool {
+        switch error.code {
+        case .networkConnectionLost, .timedOut, .notConnectedToInternet, .cannotConnectToHost, .dnsLookupFailed, .cannotFindHost:
+            true
+        default:
+            false
+        }
     }
 
     private final class Delegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {

@@ -68,11 +68,12 @@ struct QEMULaunchTests {
         let os: GuestOS
         let arch: GuestArchitecture
         let interface: DiskInterface
+        var tpm = false
         var description: String { name }
     }
 
     static let scenarios = [
-        Scenario(name: "Windows 11 ARM", os: .windows, arch: .arm64, interface: .nvme),
+        Scenario(name: "Windows 11 ARM", os: .windows, arch: .arm64, interface: .nvme, tpm: true),
         Scenario(name: "Linux ARM", os: .linux, arch: .arm64, interface: .virtio),
         Scenario(name: "Linux x86-64", os: .linux, arch: .x86_64, interface: .virtio),
         Scenario(name: "Other x86-64", os: .other, arch: .x86_64, interface: .nvme),
@@ -81,7 +82,7 @@ struct QEMULaunchTests {
     @Test(arguments: scenarios)
     func launches(_ scenario: Scenario) async throws {
         guard let binary = HostInfo.qemuBinary(for: scenario.arch), let data = HostInfo.qemuDataDirectory() else { return }
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("qemu-launch-\(UUID().uuidString)")
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ql-\(UUID().uuidString.prefix(8))")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
         let bundle = VMBundle(url: dir)
@@ -93,10 +94,31 @@ struct QEMULaunchTests {
             DiskConfiguration(path: "disk.img", sizeGiB: 1, interface: scenario.interface),
             DiskConfiguration(path: dir.appendingPathComponent("installer.iso").path, sizeGiB: 0, isReadOnly: true, interface: .usb, isRemovable: true),
         ]
+        if scenario.os == .windows {
+            // the drivers disc rides along with the installer
+            try DiskImageService.createSparseRaw(at: dir.appendingPathComponent(WindowsDrivers.discName), bytes: 4 << 20)
+            config.disks.append(DiskConfiguration(path: dir.appendingPathComponent(WindowsDrivers.discName).path, sizeGiB: 0,
+                                                  isReadOnly: true, interface: .usb, isRemovable: true))
+        }
         config.network.portForwards = [PortForward(hostPort: 0, guestPort: 22)]
         config.sharedFolders = [SharedFolder(path: dir.path)]
 
-        let builder = QEMUArgumentBuilder(config: config, bundle: bundle, qmpSocket: dir.appendingPathComponent("q").path, dataDirectory: data)
+        var builder = QEMUArgumentBuilder(config: config, bundle: bundle, qmpSocket: dir.appendingPathComponent("q").path, dataDirectory: data)
+        // a real emulated TPM, as Windows 11 gets (the socket path must stay under 104 bytes)
+        var tpm: Process?
+        if scenario.tpm, let swtpm = HostInfo.swtpm {
+            let socket = dir.appendingPathComponent("tpm.sock").path
+            try FileManager.default.createDirectory(at: dir.appendingPathComponent("TPM"), withIntermediateDirectories: true)
+            let process = Process()
+            process.executableURL = swtpm
+            process.arguments = ["socket", "--tpm2", "--tpmstate", "dir=\(dir.appendingPathComponent("TPM").path)",
+                                 "--ctrl", "type=unixio,path=\(socket)", "--terminate"]
+            try process.run()
+            tpm = process
+            for _ in 0..<30 where !FileManager.default.fileExists(atPath: socket) { try await Task.sleep(for: .milliseconds(100)) }
+            builder.tpmSocket = socket
+        }
+        defer { tpm?.terminate() }
         try FileManager.default.copyItem(at: builder.firmwareVarsTemplateURL(), to: builder.efiVariablesURL)
         var args = builder.build()
         // same machine, but headless and paused

@@ -21,7 +21,7 @@ enum ChecksumVerifier {
         }
     }
 
-    static func verify(_ file: URL, against checksumURL: URL) async throws {
+    static func verify(_ file: URL, against checksumURL: URL, progress: (@Sendable (Double) -> Void)? = nil) async throws {
         let name = file.lastPathComponent
         let expected: String
         do {
@@ -33,7 +33,7 @@ enum ChecksumVerifier {
         if let recorded = try? String(contentsOf: marker, encoding: .utf8), recorded == expected {
             return
         }
-        let actual = try await sha256(of: file)
+        let actual = try await sha256(of: file, progress: progress)
         guard actual == expected else {
             try? FileManager.default.removeItem(at: file)
             try? FileManager.default.removeItem(at: marker)
@@ -66,15 +66,19 @@ enum ChecksumVerifier {
         throw URLError(.resourceUnavailable)
     }
 
-    /// Streams the file in 8 MB chunks off the main thread.
-    static func sha256(of file: URL) async throws -> String {
+    /// Streams the file in 8 MB chunks off the main thread, reporting the fraction read so far.
+    static func sha256(of file: URL, progress: (@Sendable (Double) -> Void)? = nil) async throws -> String {
         try await Task.detached(priority: .userInitiated) {
             let handle = try FileHandle(forReadingFrom: file)
             defer { try? handle.close() }
+            let total = max(1, (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 1)
+            var read = 0
             var hasher = SHA256()
             while let chunk = try handle.read(upToCount: 8 << 20), !chunk.isEmpty {
                 try Task.checkCancellation()
                 hasher.update(data: chunk)
+                read += chunk.count
+                progress?(min(1, Double(read) / Double(total)))
             }
             return hasher.finalize().map { String(format: "%02x", $0) }.joined()
         }.value
