@@ -2,6 +2,12 @@ import Foundation
 import Observation
 
 /// A cancellable download with live progress and throughput for the UI.
+///
+/// Bytes are written straight into a hidden file beside `destination` as they arrive: nothing
+/// passes through the system's temporary folder, so a 9 GB image needs no room on the Mac's own
+/// disk when the machine lives on another drive, and finishing is an instant rename instead of
+/// a long copy that looks like a stalled download. A dropped connection resumes from the bytes
+/// already on disk.
 @Observable
 @MainActor
 final class DownloadTask {
@@ -26,7 +32,7 @@ final class DownloadTask {
     }
 
     @ObservationIgnored private var session: URLSession?
-    @ObservationIgnored private var delegate: Delegate?
+    @ObservationIgnored private var isCancelled = false
 
     init(source: URL, destination: URL) {
         self.source = source
@@ -40,15 +46,23 @@ final class DownloadTask {
             return destination
         }
         try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-        // staged beside the destination (same volume) by the download thread, so finishing is an
-        // instant rename on the main thread even when the library is on another drive
         let staging = destination.deletingLastPathComponent()
             .appendingPathComponent(".\(destination.lastPathComponent).\(UUID().uuidString.prefix(8)).download")
-        let delegate = Delegate(staging: staging)
-        self.delegate = delegate
+        let file = try StagingFile(url: staging)
+        // never leave a multi-gigabyte partial download behind
+        var finished = false
+        defer {
+            file.close()
+            if !finished { try? FileManager.default.removeItem(at: staging) }
+        }
+
+        let delegate = Delegate(file: file)
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForResource = 60 * 60 * 6
-        let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = 1
+        let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: queue)
         self.session = session
         defer { session.finishTasksAndInvalidate() }
 
@@ -61,17 +75,17 @@ final class DownloadTask {
                 let now = Date()
                 let elapsed = now.timeIntervalSince(lastSample.date)
                 if elapsed >= 0.5 {
-                    let instant = Double(received - lastSample.bytes) / elapsed
+                    let instant = Double(max(0, received - lastSample.bytes)) / elapsed
                     self.bytesPerSecond = self.bytesPerSecond == 0 ? instant : self.bytesPerSecond * 0.7 + instant * 0.3
                     lastSample = (now, received)
                 }
             }
         }
-        let temp = try await downloadResuming(session: session, delegate: delegate)
-        // never leave a multi-gigabyte partial download behind
-        defer { try? FileManager.default.removeItem(at: temp) }
+        try await downloadResuming(session: session, delegate: delegate, file: file)
+        file.close()
         try? FileManager.default.removeItem(at: destination)
-        try FileManager.default.moveItem(at: temp, to: destination)
+        try FileManager.default.moveItem(at: staging, to: destination)
+        finished = true
         isFinished = true
         return destination
     }
@@ -81,27 +95,27 @@ final class DownloadTask {
         session?.invalidateAndCancel()
     }
 
-    @ObservationIgnored private var isCancelled = false
-
     static let maximumRetries = 5
 
-    /// Mirrors drop long downloads now and then, and Wi-Fi blips. Pick up where the download
-    /// stopped (or start over when the server can't resume) instead of failing a 5 GB download at 90%.
-    private func downloadResuming(session: URLSession, delegate: Delegate) async throws -> URL {
-        var resumeData: Data?
+    /// Mirrors drop long downloads now and then, and Wi-Fi blips. Ask for the rest of the file
+    /// (or start over when the server can't resume) instead of failing a 9 GB download at 90%.
+    private func downloadResuming(session: URLSession, delegate: Delegate, file: StagingFile) async throws {
         while true {
             // a cancelled session can't make new tasks (creating one raises an exception)
             guard !isCancelled else { throw URLError(.cancelled) }
+            var request = URLRequest(url: source)
+            let offset = file.size
+            if offset > 0 {
+                request.setValue("bytes=\(offset)-", forHTTPHeaderField: "Range")
+            }
             do {
-                return try await withCheckedThrowingContinuation { continuation in
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                     delegate.onFinish = { result in continuation.resume(with: result) }
-                    let task = resumeData.map { session.downloadTask(withResumeData: $0) } ?? session.downloadTask(with: source)
-                    task.resume()
+                    session.dataTask(with: request).resume()
                 }
+                return
             } catch let error as URLError where Self.isTransient(error) && retries < Self.maximumRetries {
                 retries += 1
-                resumeData = error.downloadTaskResumeData
-                if resumeData == nil { receivedBytes = 0 }
                 bytesPerSecond = 0
                 // 4, 8, 16, 30, 30 seconds: long enough for Wi-Fi to come back
                 isReconnecting = true
@@ -120,43 +134,98 @@ final class DownloadTask {
         }
     }
 
-    private final class Delegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    /// The partial file on the destination's drive. Used only from the session's serial queue
+    /// (and by `run` before and after it).
+    private final class StagingFile: @unchecked Sendable {
+        let url: URL
+        private var handle: FileHandle?
+        private(set) var size: Int64 = 0
+
+        init(url: URL) throws {
+            self.url = url
+            guard FileManager.default.createFile(atPath: url.path, contents: nil) else {
+                throw CocoaError(.fileWriteNoPermission, userInfo: [NSFilePathErrorKey: url.path])
+            }
+            handle = try FileHandle(forWritingTo: url)
+        }
+
+        func write(_ data: Data) throws {
+            try handle?.write(contentsOf: data)
+            size += Int64(data.count)
+        }
+
+        /// The server sent the whole file again: drop what's there.
+        func restart() throws {
+            try handle?.truncate(atOffset: 0)
+            size = 0
+        }
+
+        func close() {
+            try? handle?.close()
+            handle = nil
+        }
+    }
+
+    private final class Delegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
         var onProgress: ((Int64, Int64) -> Void)?
-        var onFinish: ((Result<URL, Error>) -> Void)?
-        let staging: URL
+        var onFinish: ((Result<Void, Error>) -> Void)?
+        private let file: StagingFile
+        private var expected: Int64 = 0
+        private var writeError: Error?
+        private var lastReport = Date.distantPast
 
-        init(staging: URL) {
-            self.staging = staging
+        init(file: StagingFile) {
+            self.file = file
         }
 
-        func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-            onProgress?(totalBytesWritten, totalBytesExpectedToWrite)
-        }
-
-        func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-            if let response = downloadTask.response as? HTTPURLResponse, !(200..<300).contains(response.statusCode) {
-                onFinish?(.failure(URLError(.badServerResponse)))
-                onFinish = nil
+        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+            writeError = nil
+            guard let http = response as? HTTPURLResponse else { completionHandler(.allow); return }
+            switch http.statusCode {
+            case 206:
+                // the rest of the file, after what's on disk
+                expected = file.size + max(0, response.expectedContentLength)
+            case 200..<300:
+                // the whole file: from the start, even if a resume was asked for
+                do { try file.restart() } catch { writeError = error; completionHandler(.cancel); return }
+                expected = max(0, response.expectedContentLength)
+            default:
+                writeError = URLError(http.statusCode == 404 ? .fileDoesNotExist : .badServerResponse)
+                completionHandler(.cancel)
                 return
             }
-            // the system deletes `location` when this returns; move it onto the destination volume now,
-            // off the main thread (a copy across drives can take a while for multi-gigabyte images)
+            completionHandler(.allow)
+        }
+
+        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
             do {
-                try? FileManager.default.removeItem(at: staging)
-                try FileManager.default.moveItem(at: location, to: staging)
-                onFinish?(.success(staging))
+                try file.write(data)
             } catch {
-                try? FileManager.default.removeItem(at: staging)
-                onFinish?(.failure(error))
+                writeError = error
+                dataTask.cancel()
+                return
             }
-            onFinish = nil
+            let now = Date()
+            if now.timeIntervalSince(lastReport) >= 0.1 {
+                lastReport = now
+                onProgress?(file.size, max(expected, file.size))
+            }
         }
 
         func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-            if let error {
+            onProgress?(file.size, max(expected, file.size))
+            if let writeError {
+                onFinish?(.failure(writeError))
+            } else if let error {
                 onFinish?(.failure(error))
-                onFinish = nil
+            } else if expected > 0 && file.size < expected {
+                // the server closed early without an error: treat it as a dropped connection
+                onFinish?(.failure(URLError(.networkConnectionLost)))
+            } else {
+                onFinish?(.success(()))
             }
+            onFinish = nil
         }
     }
 }
