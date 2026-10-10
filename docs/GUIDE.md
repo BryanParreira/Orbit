@@ -97,6 +97,8 @@ Tips:
 
 ## Installing the guest system
 
+Each system installs with its own installer, the same one you'd see on a PC. While the installer is attached, click **Setup Steps** (in the machine's window or on its page) for the choices to make. When an installer asks which disk to use, the only disks it can see are the machine's own virtual disk and the read-only installer: your Mac's drives are never visible to a guest, so "erase disk" only ever erases that virtual disk.
+
 When the machine starts for the first time it boots from the installer. Follow the system's own installer as you would on a real computer. The disk the installer sees is the virtual disk Orbit created. It's a file inside the machine's package, never a disk of your Mac.
 
 **After installation:** shut the machine down, then click **Eject** on the *Installer attached* banner. The next start boots the installed system.

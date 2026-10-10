@@ -78,6 +78,9 @@ struct VMDisplayWindow: View {
             }
             .help("Take a snapshot (memory included)")
             .disabled(vm.state != .running || !vm.canSuspend || vm.isDisposableRun)
+            if vm.config.installerMedia != nil {
+                InstallGuideButton(vm: vm, label: false)
+            }
             Button { isPickingFolder = true } label: { Label("Share Folder", systemImage: "folder.badge.plus") }
                 .help("Share a Mac folder with the guest (live)")
             if #available(macOS 27, *), USBPassthrough.isAvailable {

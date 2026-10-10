@@ -318,6 +318,7 @@ private struct Banners: View {
             if let installer = vm.config.installerMedia, vm.installStatus == nil {
                 Banner(symbol: "opticaldisc", title: "Installer attached",
                        message: URL(fileURLWithPath: installer.path).lastPathComponent) {
+                    InstallGuideButton(vm: vm)
                     Button("Eject") { vm.ejectInstaller() }
                         .disabled(vm.state.isActive)
                         .help(vm.state.isActive ? "Shut down to eject" : "Remove the installer once the OS is installed")
