@@ -114,6 +114,7 @@ When the machine starts for the first time it boots from the installer. Follow t
 - **All Machines:** Orbit opens on a gallery of every machine with a live preview. Hover a card for start, pause, suspend and shut-down buttons; double-click it to start and open the machine; click it for its details page.
 - **Start:** click **Start** (or double-click the machine in the sidebar). A suspended machine shows **Resume** and comes back exactly where you left it.
 - **The machine window:** click inside to type into the guest. Use the toolbar to pause, restart, shut down, take a snapshot or share a folder.
+- **Keep on Top:** the pin button in the machine window's toolbar keeps the window above other apps, so you can watch the guest while you work on your Mac.
 - **Full screen:** use the green button or **⌃⌘F**.
 - **System shortcuts:** with the ⌘ button in the toolbar turned on, shortcuts like ⌘Tab and ⌘Space go to the guest instead of macOS.
 - **Text size (Linux):** if text looks too small or too large, use the **Aa** button in the machine window's toolbar, or the machine's settings (**⌘I**) → Display → **Text size**. It changes immediately. *Large* matches macOS and is the default. *Sharp* gives the full Retina resolution.
@@ -200,7 +201,9 @@ sudo /usr/sbin/update-binfmts --install rosetta /media/rosetta/rosetta \
 
 **Suspend** saves the machine's memory to disk and stops it. Starting it again resumes in under a second, with every window and app exactly where you left them. When you quit Orbit with machines running, they're suspended automatically (Settings → Advanced → *Suspend when Orbit quits*).
 
-**Snapshots** save the machine's state so you can return to it later. Taking one is instant and uses no extra space until the machine changes afterwards. A snapshot taken while the machine runs (marked with a memory chip) restores to that exact running moment. Find them on the machine's page under **Snapshots**. Hover a snapshot and click **Restore** to return to it.
+**Snapshots** save the machine's state so you can return to it later. Taking one is instant and uses no extra space until the machine changes afterwards. A snapshot taken while the machine runs (marked with a memory chip) restores to that exact running moment. Find them on the machine's page under **Snapshots**. Hover a snapshot and click **Restore** to return to it, or choose **Machine → Revert to Last Snapshot…** to go back to the newest one.
+
+**Automatic snapshots** (Settings → Advanced) take a snapshot by themselves, *daily* or *weekly*, as the machine starts. Orbit keeps the newest 3 and removes older automatic ones; snapshots you take yourself are never removed. They're taken only on APFS drives, where each one is instant.
 
 **Disposable sessions** (**⋯** menu → Start Options → Disposable Session) run the machine on a throwaway copy. Nothing it does is kept, which makes them ideal for opening untrusted files or testing risky changes. Restarting during a disposable session keeps it disposable.
 
@@ -223,6 +226,8 @@ Open a machine's settings with **⌘I** or the sliders button. Changes save auto
 | **Network** | *Shared (NAT)*: the guest uses your Mac's connection (recommended). *Host Only*: the guest can reach your Mac but not the internet. *Disconnected*: no network |
 | **Sharing** | Shared folders, clipboard, Rosetta, sound and microphone |
 | **Suspend when Orbit quits** | Resume instantly next time instead of a fresh boot |
+| **Start when Orbit opens** | Start (or resume) the machine every time Orbit opens |
+| **Automatic snapshots** | *Off*, *Daily* or *Weekly*. See [snapshots](#suspend-snapshots-and-disposable-sessions) |
 
 The microphone is off by default. When you turn it on, macOS asks you once whether Orbit may use it.
 
@@ -255,6 +260,7 @@ Notes:
 - **Screen size.** Windows runs at 800 × 600 in a window you can resize; the picture is scaled to fit. A sharper, adjustable resolution needs a display device the standard QEMU doesn't offer yet.
 - After setup, Windows starts straight from its disk even if the installer is still attached.
 - QEMU machines open in their own window and can't be suspended to disk. Shut them down normally.
+- **Ctrl-Alt-Delete.** Your Mac's keyboard can't send it; choose **Machine → Send Ctrl-Alt-Delete** instead.
 
 ---
 

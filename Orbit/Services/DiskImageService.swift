@@ -178,6 +178,8 @@ enum DiskImporter {
     /// Copy or convert `source` into `directory`; returns the new file name.
     static func importDisk(_ source: URL, format: DiskFormat, into directory: URL, id: UUID, engine: VMEngineKind) async throws -> String {
         let base = "Disk-\(id.uuidString.prefix(8))"
+        // never copy in (or convert) an image that pulls in other files from this Mac
+        try await DiskImageSafety.check(source, format: format, qemuImg: HostInfo.qemuImg())
         if format.isNative(to: engine) {
             let ext = switch format {
             case .asif: "asif"
@@ -221,5 +223,70 @@ enum DiskImporter {
             throw error
         }
         return name
+    }
+}
+
+/// Keeps disk images from reaching other files on this Mac.
+///
+/// Some formats can name other files: a QCOW2 or VMDK "backing file" the image is a delta of, a
+/// QCOW2 "external data file", the extents of a split VMDK. QEMU opens whatever they name, so a
+/// crafted image could pass a guest any file the user can read (or convert it into a disk the
+/// guest can read). Orbit never makes images like that, so it refuses them.
+enum DiskImageSafety {
+    struct Unsafe: LocalizedError {
+        let name: String
+        let reason: String
+
+        var errorDescription: String? {
+            "“\(name)” \(reason), so Orbit won't use it: the machine could read files on this Mac through it. Convert it to a standalone image first (qemu-img convert -O qcow2 in.qcow2 out.qcow2)."
+        }
+    }
+
+    /// Reads only the QCOW2 header, so it's cheap enough to run before every start.
+    static func checkQCOW2Header(_ url: URL) throws {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return }
+        defer { try? handle.close() }
+        guard let header = try? handle.read(upToCount: 104), header.count >= 72,
+              header.prefix(4) == Data([0x51, 0x46, 0x49, 0xFB]) else { return }
+        func be64(_ offset: Int) -> UInt64 { header[offset..<offset + 8].reduce(0) { $0 << 8 | UInt64($1) } }
+        func be32(_ offset: Int) -> UInt32 { header[offset..<offset + 4].reduce(0) { $0 << 8 | UInt32($1) } }
+        if be64(8) != 0 {
+            throw Unsafe(name: url.lastPathComponent, reason: "depends on another file (a backing file)")
+        }
+        // version 3 headers: incompatible feature bit 2 is "external data file"
+        if be32(4) >= 3, header.count >= 80, be64(72) & 0b100 != 0 {
+            throw Unsafe(name: url.lastPathComponent, reason: "keeps its data in another file")
+        }
+    }
+
+    /// Ask qemu-img which other files the image names. For formats Orbit converts (VMDK, VDI,
+    /// VHD, VHDX) and for QCOW2 brought in from elsewhere.
+    static func check(_ url: URL, format: DiskFormat, qemuImg: URL?) async throws {
+        if format == .qcow2 { try checkQCOW2Header(url) }
+        guard format != .raw, format != .asif, let qemuImg, FileManager.default.isExecutableFile(atPath: qemuImg.path),
+              let output = try? await DiskImageService.run(qemuImg, ["info", "--output=json", "-f", format.qemuName, url.path]),
+              let info = try? JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any] else { return }
+        try check(info: info, of: url)
+    }
+
+    /// `info` is qemu-img's JSON description of the image at `url`.
+    static func check(info: [String: Any], of url: URL) throws {
+        if info["backing-filename"] != nil || info["full-backing-filename"] != nil {
+            throw Unsafe(name: url.lastPathComponent, reason: "depends on another file (a backing file)")
+        }
+        let specific = (info["format-specific"] as? [String: Any])?["data"] as? [String: Any] ?? [:]
+        if specific["data-file"] != nil {
+            throw Unsafe(name: url.lastPathComponent, reason: "keeps its data in another file")
+        }
+        // a split VMDK's extents must be its own pieces, beside it
+        let folder = url.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL.path
+        for extent in specific["extents"] as? [[String: Any]] ?? [] {
+            guard let filename = extent["filename"] as? String else { continue }
+            let file = URL(fileURLWithPath: filename, relativeTo: url.deletingLastPathComponent())
+            let resolved = file.resolvingSymlinksInPath().standardizedFileURL
+            if resolved.deletingLastPathComponent().path != folder {
+                throw Unsafe(name: url.lastPathComponent, reason: "names a file outside its folder (\(file.lastPathComponent))")
+            }
+        }
     }
 }

@@ -46,9 +46,16 @@ Please report security problems privately through [GitHub Security Advisories](h
 A machine package is just a folder, so one you received from someone else could describe anything. Orbit treats every package as untrusted:
 
 - Disks must be files inside the package. A package that points a disk at another file on your Mac, or uses `../` to escape its folder, has that disk removed.
-- Installer media from outside the package is always attached read-only.
-- Imported machines start without shared folders, custom QEMU arguments or bridged networking.
-- Snapshot data can only restore files inside its own package.
+- A package that contains symbolic links isn't imported, and a machine whose package contains one won't start: a link could hand the guest any file on your Mac.
+- Installer media is always attached read-only. Imported machines lose any installer outside their own package, because it could name any file on your Mac.
+- Imported machines start without shared folders, port forwards, custom QEMU arguments, bridged networking or *Start when Orbit opens*.
+- Settings that reach QEMU's command line (the MAC address, the machine type) must have their expected form, so they can't carry extra options.
+- Snapshot data can only restore files inside its own package, and a snapshot containing a link is refused before anything is changed.
+
+### Disk images
+
+- QCOW2 and VMDK images can name other files: a backing file, an external data file, the pieces of a split disk. A crafted image could use that to pass a guest any file you can read. Orbit refuses images that name files outside their own folder, when importing them and (for QCOW2) every time a machine starts.
+- Installer discs are passed to QEMU as plain data, never probed for a format.
 
 ## Supported versions
 

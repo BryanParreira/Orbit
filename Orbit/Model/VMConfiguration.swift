@@ -247,6 +247,35 @@ struct QEMUOptions: Codable, Hashable {
     var tpm = false
 }
 
+/// Snapshots Orbit takes by itself, as the machine starts, so there's always a recent point to go
+/// back to. Instant and free on APFS until the machine changes.
+enum AutomaticSnapshots: String, Codable, CaseIterable, Identifiable {
+    case off
+    case daily
+    case weekly
+
+    var id: String { rawValue }
+
+    /// How many automatic snapshots are kept; the oldest goes when a new one is taken.
+    static let keep = 3
+
+    var displayName: String {
+        switch self {
+        case .off: "Off"
+        case .daily: "Daily"
+        case .weekly: "Weekly"
+        }
+    }
+
+    var interval: TimeInterval? {
+        switch self {
+        case .off: nil
+        case .daily: 24 * 3600
+        case .weekly: 7 * 24 * 3600
+        }
+    }
+}
+
 struct VMConfiguration: Codable, Identifiable, Hashable {
     static let currentVersion = 1
 
@@ -278,6 +307,9 @@ struct VMConfiguration: Codable, Identifiable, Hashable {
     var suspendOnQuit = true
     /// Boot from removable media before the main disk (first boot after creation).
     var bootFromInstaller = true
+    /// Start this machine whenever Orbit opens.
+    var startWithOrbit = false
+    var automaticSnapshots: AutomaticSnapshots = .off
     var qemu = QEMUOptions()
 
     var createdAt = Date()
@@ -327,6 +359,8 @@ extension VMConfiguration {
         diskPerformance = try c.decodeIfPresent(DiskPerformance.self, forKey: .diskPerformance) ?? defaults.diskPerformance
         suspendOnQuit = try c.decodeIfPresent(Bool.self, forKey: .suspendOnQuit) ?? defaults.suspendOnQuit
         bootFromInstaller = try c.decodeIfPresent(Bool.self, forKey: .bootFromInstaller) ?? false
+        startWithOrbit = try c.decodeIfPresent(Bool.self, forKey: .startWithOrbit) ?? defaults.startWithOrbit
+        automaticSnapshots = (try? c.decodeIfPresent(AutomaticSnapshots.self, forKey: .automaticSnapshots)) ?? defaults.automaticSnapshots
         qemu = try c.decodeIfPresent(QEMUOptions.self, forKey: .qemu) ?? defaults.qemu
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         lastRunAt = try c.decodeIfPresent(Date.self, forKey: .lastRunAt)

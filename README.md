@@ -77,6 +77,7 @@ Choose a system, review the settings Orbit picked, and click **Create**.
 | **Apple Virtualization** | macOS and ARM64 Linux guests on Apple's hypervisor, with virtio disks, networking, sound, entropy and memory balloon |
 | **Suspend and resume** | Memory is saved on quit and restored on launch. Measured at 0.6 s for a Linux guest on an M4 |
 | **Instant snapshots** | APFS clones: a snapshot takes no time and no space until the machine changes. Snapshots taken while running restore to the exact running state |
+| **Automatic snapshots** | Daily or weekly, taken as the machine starts. The newest three are kept, and Revert to Last Snapshot is one command away |
 | **Disposable sessions** | Run on throwaway copies. Close the machine and every change is gone |
 | **Instant duplicates** | Clone a machine in a second, with a fresh hardware identity so both can run side by side |
 | **Sparse disks** | Apple's ASIF format for native machines, SSD-tuned QCOW2 for QEMU |

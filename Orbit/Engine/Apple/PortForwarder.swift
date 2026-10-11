@@ -53,7 +53,7 @@ final class PortForwarder {
             return
         }
         let outbound = NWConnection(host: NWEndpoint.Host(address), port: guestPort, using: udp ? .udp : .tcp)
-        let close = { inbound.cancel(); outbound.cancel() }
+        let close: @Sendable () -> Void = { inbound.cancel(); outbound.cancel() }
         for connection in [inbound, outbound] {
             connection.stateUpdateHandler = { state in
                 switch state {

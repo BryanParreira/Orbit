@@ -128,7 +128,9 @@ final class VMLibrary {
     /// Use `url` for the library. A folder that already holds other things (Documents, an external
     /// drive) gets an "Orbit Virtual Machines" folder inside it rather than having machines mixed
     /// in with the user's files.
-    func moveLibrary(to url: URL) {
+    func moveLibrary(to url: URL) throws {
+        // not inside a machine's package, and somewhere Orbit can write
+        try validateLocation(url)
         let items = ((try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? []).filter { !$0.hasPrefix(".") }
         let isLibrary = items.allSatisfy { $0 == "Installers" || $0.hasSuffix(".\(VMBundle.fileExtension)") }
         let target = isLibrary ? url : url.appendingPathComponent("Orbit Virtual Machines", isDirectory: true)
@@ -483,14 +485,26 @@ final class VMLibrary {
         case VMBundle.fileExtension:
             var config = try VMBundle(url: url).loadConfiguration()
             PackageValidator.sanitize(&config, imported: true)
-            if vms.contains(where: { $0.id == config.id }) {
+            // a second copy of a machine already here: give it its own identity so both can run
+            let isCopy = vms.contains(where: { $0.id == config.id })
+            if isCopy {
                 config.id = UUID()
+                config.network.macAddress = NetworkConfiguration.randomMACAddress()
             }
             config.name = uniqueName(config.name)
             let bundle = try makeBundle(named: config.name)
             do {
                 try FileManager.default.removeItem(at: bundle.url)
                 try await FileCloner.cloneInBackground(url, to: bundle.url)
+                let links = PackageValidator.symbolicLinks(in: bundle.url)
+                guard links.isEmpty else {
+                    throw VMError.invalidConfiguration("“\(url.lastPathComponent)” contains links to files outside the machine (\(links.prefix(3).joined(separator: ", "))), so it wasn't imported. A guest could reach those files through them.")
+                }
+                if isCopy {
+                    try PlatformProvisioner.regenerateIdentity(bundle: bundle, guestOS: config.guestOS)
+                    // saved memory belongs to the other identity
+                    try? FileManager.default.removeItem(at: bundle.savedStateURL)
+                }
                 return try register(bundle: bundle, config: config)
             } catch {
                 try? FileManager.default.removeItem(at: bundle.url)

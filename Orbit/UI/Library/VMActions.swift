@@ -18,6 +18,20 @@ enum VMActions {
         }
     }
 
+    /// Go back to `snapshot` after the user confirms; the current state is replaced.
+    static func confirmRevert(_ vm: VMInstance, to snapshot: VMSnapshot) {
+        let alert = NSAlert()
+        alert.messageText = "Revert “\(vm.config.name)” to “\(snapshot.name)”?"
+        alert.informativeText = vm.state.isActive
+            ? "The machine is turned off and everything since that snapshot is lost. Take a snapshot first to keep it."
+            : "Everything since that snapshot is lost. Take a snapshot first to keep it."
+        alert.addButton(withTitle: "Revert")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons.first?.hasDestructiveAction = true
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        Task { await vm.restore(snapshot) }
+    }
+
     /// Opens the delete sheet, which shows what will be removed before anything happens.
     static func confirmDelete(_ vm: VMInstance, library: VMLibrary) {
         AppRouter.shared.showLibrary()

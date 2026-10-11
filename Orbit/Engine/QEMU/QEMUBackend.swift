@@ -42,6 +42,10 @@ final class QEMUBackend: VMBackend {
         isStopping = false
         var launched: Process?
         do {
+            // a QCOW2 that names another file would let the guest read it
+            for disk in config.disks where !disk.isRemovable && bundle.diskURL(for: disk).pathExtension == "qcow2" {
+                try DiskImageSafety.checkQCOW2Header(bundle.diskURL(for: disk))
+            }
             // control sockets live in this user's private temp folder, readable by nobody else
             // (sun_path is limited to 104 bytes, so the name stays short)
             let sockets = FileManager.default.temporaryDirectory.appendingPathComponent("orbit-\(config.id.uuidString.prefix(8))", isDirectory: true)
@@ -250,6 +254,12 @@ final class QEMUBackend: VMBackend {
 
     func suspend() async throws {
         throw VMError.unsupported("Suspending to disk")
+    }
+
+    /// Press keys together in the guest, by QEMU key name ("ctrl", "alt", "delete").
+    func sendKeys(_ keys: [String]) async throws {
+        guard let qmp, state == .running else { throw VMError.notRunning }
+        try await qmp.execute("send-key", arguments: ["keys": keys.map { ["type": "qcode", "data": $0] }])
     }
 
     /// QEMU draws in its own Cocoa window; bring that process forward.

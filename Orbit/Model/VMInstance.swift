@@ -36,6 +36,7 @@ final class VMInstance: Identifiable {
     @ObservationIgnored private var screenshotTimer: Timer?
     @ObservationIgnored private var healthTimer: Timer?
     @ObservationIgnored private var portForwarder: PortForwarder?
+    @ObservationIgnored private var isPreparingStart = false
 
     nonisolated let id: UUID
 
@@ -58,8 +59,16 @@ final class VMInstance: Identifiable {
 
     func start(options: StartOptions = []) async {
         await perform {
-            guard state == .stopped else { return }
+            // a second click while an automatic snapshot is taken must not start twice
+            guard state == .stopped, !isPreparingStart else { return }
+            isPreparingStart = true
+            defer { isPreparingStart = false }
             try ResourceGuard.checkCanStart(self, library: VMLibrary.shared)
+            try PackageValidator.checkFiles(of: bundle)
+            if !options.contains(.disposable), await takeAutomaticSnapshotIfDue() {
+                // another machine may have started while the snapshot was taken
+                try ResourceGuard.checkCanStart(self, library: VMLibrary.shared)
+            }
             let backend = makeBackendIfNeeded()
             isDisposableRun = options.contains(.disposable)
             try await backend.start(options: options)
@@ -95,6 +104,13 @@ final class VMInstance: Identifiable {
 
     func restart() async {
         await perform { try await backend?.restart() }
+    }
+
+    /// Ctrl-Alt-Delete, which the Mac keyboard can't send (Windows sign-in, Task Manager).
+    var canSendCtrlAltDelete: Bool { state == .running && backend is QEMUBackend }
+
+    func sendCtrlAltDelete() async {
+        await perform { try await (backend as? QEMUBackend)?.sendKeys(["ctrl", "alt", "delete"]) }
     }
 
     func suspend() async {
@@ -202,10 +218,11 @@ final class VMInstance: Identifiable {
     /// Detach installer media. Media Orbit put in the package (a downloaded installer, the
     /// drivers disc) has no other use, so its file goes too and the space comes back.
     private func removeInstallers(keeping kept: URL? = nil, keepDrivers: Bool = false) {
-        let prefix = bundle.url.standardizedFileURL.path + "/"
-        for disk in config.disks where disk.isRemovable && disk.path.hasPrefix(prefix) && disk.path != kept?.path
-            && !(keepDrivers && disk.isDriversDisc) {
-            let url = URL(fileURLWithPath: disk.path)
+        let package = bundle.url.resolvingSymlinksInPath().standardizedFileURL.path
+        for disk in config.disks where disk.isRemovable && disk.path != kept?.path && !(keepDrivers && disk.isDriversDisc) {
+            // only a file Orbit itself put directly in the package, never one elsewhere
+            let url = URL(fileURLWithPath: disk.path).resolvingSymlinksInPath().standardizedFileURL
+            guard url.deletingLastPathComponent().path == package else { continue }
             try? FileManager.default.removeItem(at: url)
             try? FileManager.default.removeItem(at: VMLibrary.verificationMarker(for: url))
         }
@@ -291,6 +308,10 @@ final class VMInstance: Identifiable {
     }
 
     func restore(_ snapshot: VMSnapshot) async {
+        guard installStatus == nil else {
+            lastError = "Wait for “\(config.name)” to finish \(installStatus?.lowercased() ?? "setting up") before restoring a snapshot."
+            return
+        }
         await perform {
             if state.isActive {
                 try await backend?.forceStop()
@@ -298,6 +319,24 @@ final class VMInstance: Identifiable {
             try await SnapshotStore.restore(snapshot, for: self)
             if let image = NSImage(contentsOf: bundle.screenshotURL) { screenshot = image }
             refreshFileState()
+        }
+    }
+
+    /// The newest snapshot, for "Revert to Last Snapshot".
+    var latestSnapshot: VMSnapshot? { snapshots.first }
+
+    /// Parallels-style SmartGuard: a snapshot on the machine's schedule, taken as it starts.
+    /// Only where it's an instant APFS clone; never holds up the start if it fails.
+    /// - Returns: true when a snapshot was taken.
+    private func takeAutomaticSnapshotIfDue() async -> Bool {
+        guard config.automaticSnapshots != .off, HostInfo.supportsCloning(at: bundle.url) else { return false }
+        do {
+            guard try await SnapshotStore.takeAutomaticIfDue(for: self) else { return false }
+            refreshFileState()
+            return true
+        } catch {
+            lastError = "Couldn't take the automatic snapshot: \(ErrorMessages.message(for: error) ?? error.localizedDescription) The machine starts anyway."
+            return false
         }
     }
 

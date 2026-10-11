@@ -26,10 +26,11 @@ struct QEMUArgumentBuilder {
     }
 
     func build() -> [String] {
-        var args: [String] = ["-name", config.name]
+        // "guest=" and doubled commas: a name like "Lab, test" must not be read as options
+        var args: [String] = ["-name", "guest=\(q(config.name))"]
 
         // Machine + acceleration
-        let machine = config.qemu.machine ?? (isArm ? "virt" : "q35")
+        let machine = config.qemu.machine.flatMap { PackageValidator.isValidMachineType($0) ? $0 : nil } ?? (isArm ? "virt" : "q35")
         args += ["-machine", machine]
         if isNative {
             args += ["-accel", "hvf", "-cpu", "host"]
@@ -81,7 +82,8 @@ struct QEMUArgumentBuilder {
             let id = "drive\(index)"
             index += 1
             if disk.isRemovable {
-                args += ["-drive", "if=none,id=\(id),media=cdrom,readonly=on,file=\(q(url.path))"]
+                // format=raw: QEMU never guesses, so an "ISO" that's really a QCOW2 can't pull in other files
+                args += ["-drive", "if=none,id=\(id),media=cdrom,readonly=on,format=raw,file=\(q(url.path))"]
                 // only the installer boots; a drivers disc next to it is just data
                 let boot = bootsFromInstaller && disk.id == config.installerMedia?.id ? ",bootindex=0" : ""
                 if isArm {
@@ -107,10 +109,12 @@ struct QEMUArgumentBuilder {
             args += ["-nic", "none"]
         } else {
             var netdev = "user,id=net0"
-            for forward in config.network.portForwards {
+            for forward in config.network.portForwards
+            where PackageValidator.validPorts.contains(forward.hostPort) && PackageValidator.validPorts.contains(forward.guestPort) {
                 netdev += ",hostfwd=\(forward.isUDP ? "udp" : "tcp")::\(forward.hostPort)-:\(forward.guestPort)"
             }
-            args += ["-netdev", netdev, "-device", "virtio-net-pci,netdev=net0,mac=\(config.network.macAddress)"]
+            let mac = PackageValidator.isValidMACAddress(config.network.macAddress) ? ",mac=\(config.network.macAddress)" : ""
+            args += ["-netdev", netdev, "-device", "virtio-net-pci,netdev=net0\(mac)"]
         }
 
         // Audio

@@ -47,7 +47,12 @@ private struct GeneralPreferences: View {
         }
         .formStyle(.grouped)
         .fileImporter(isPresented: $isPicking, allowedContentTypes: [.folder]) { result in
-            if case .success(let url) = result { library.moveLibrary(to: url) }
+            guard case .success(let url) = result else { return }
+            do {
+                try library.moveLibrary(to: url)
+            } catch {
+                LibraryDropHandler.presentError(error)
+            }
         }
     }
 }

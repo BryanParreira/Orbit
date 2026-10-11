@@ -52,6 +52,9 @@ struct OrbitCommands: Commands {
                 .keyboardShortcut("q", modifiers: [.command, .option, .shift])
                 .disabled(vm?.state.isActive != true)
 
+            Button("Send Ctrl-Alt-Delete") { Task { await vm?.sendCtrlAltDelete() } }
+                .disabled(vm?.canSendCtrlAltDelete != true)
+
             Divider()
 
             Button("Take Snapshot") {
@@ -59,7 +62,13 @@ struct OrbitCommands: Commands {
                 Task { await vm.takeSnapshot(named: Date.now.formatted(date: .abbreviated, time: .shortened)) }
             }
             .keyboardShortcut("s", modifiers: [.command, .shift])
-            .disabled(vm == nil || vm!.state.isBusy)
+            .disabled(vm == nil || vm!.state.isBusy || vm!.installStatus != nil || vm!.isDisposableRun || (vm!.state.isActive && !vm!.canSuspend))
+
+            Button("Revert to Last Snapshot…") {
+                guard let vm, let snapshot = vm.latestSnapshot else { return }
+                VMActions.confirmRevert(vm, to: snapshot)
+            }
+            .disabled(vm?.latestSnapshot == nil || vm!.state.isBusy || vm!.installStatus != nil)
 
             Divider()
 

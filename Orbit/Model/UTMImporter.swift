@@ -11,6 +11,9 @@ enum UTMImporter {
             throw VMError.invalidConfiguration("This UTM package has no readable config.plist.")
         }
         let dataDir = url.appendingPathComponent("Data", isDirectory: true)
+        guard !PackageValidator.isSymbolicLink(dataDir) else {
+            throw VMError.invalidConfiguration("This UTM package's Data folder is a link to somewhere else on this Mac, so it can't be imported.")
+        }
         let info = root["Information"] as? [String: Any] ?? [:]
         let system = root["System"] as? [String: Any] ?? [:]
         let isApple = (root["Backend"] as? String) == "Apple"
@@ -37,16 +40,24 @@ enum UTMImporter {
 
         let bundle = try library.makeBundle(named: name)
         do {
+            // Discs stay in the UTM package (read-only, checked to be real files inside it)
+            var discs: [DiskConfiguration] = []
             // Drives
             for drive in root["Drive"] as? [[String: Any]] ?? [] {
                 guard let imageName = drive["ImageName"] as? String, PackageValidator.isContainedName(imageName) else { continue }
                 let source = dataDir.appendingPathComponent(imageName)
                 guard FileManager.default.fileExists(atPath: source.path) else { continue }
+                // cloning follows a link, which would copy whatever file it names into the machine
+                guard !PackageValidator.isSymbolicLink(source) else {
+                    throw VMError.invalidConfiguration("The UTM package's drive “\(imageName)” is a link to a file outside the package, so it wasn't imported.")
+                }
                 let isCD = (drive["ImageType"] as? String) == "CD" || (drive["External"] as? Bool) == true
                 if isCD {
-                    config.disks.append(DiskConfiguration(path: source.path, sizeGiB: 0, isReadOnly: true, interface: .usb, isRemovable: true))
+                    discs.append(DiskConfiguration(path: source.path, sizeGiB: 0, isReadOnly: true, interface: .usb, isRemovable: true))
                     continue
                 }
+                let format: DiskFormat = if case .diskImage(let f) = FileInspector.inspect(source) { f } else { .raw }
+                try await DiskImageSafety.check(source, format: format, qemuImg: HostInfo.qemuImg())
                 try await FileCloner.cloneInBackground(source, to: bundle.url.appendingPathComponent(imageName))
                 let interface: DiskInterface = switch drive["Interface"] as? String {
                 case "NVMe": .nvme
@@ -54,7 +65,6 @@ enum UTMImporter {
                 default: (drive["Nvme"] as? Bool) == true ? .nvme : .virtio
                 }
                 // virtual size, not file size: qcow2 and sparse images are much smaller than the disk they hold
-                let format: DiskFormat = if case .diskImage(let f) = FileInspector.inspect(source) { f } else { .raw }
                 let size = await FileInspector.virtualSizeGiB(of: source, format: format)
                 config.disks.append(DiskConfiguration(path: imageName, sizeGiB: size,
                                                       isReadOnly: drive["ReadOnly"] as? Bool ?? false, interface: interface))
@@ -73,12 +83,14 @@ enum UTMImporter {
                 try importApplePlatform(system: system, dataDir: dataDir, bundle: bundle, config: &config, root: root)
             } else {
                 let efi = dataDir.appendingPathComponent("efi_vars.fd")
-                if FileManager.default.fileExists(atPath: efi.path) {
+                if FileManager.default.fileExists(atPath: efi.path), !PackageValidator.isSymbolicLink(efi) {
                     try FileCloner.clone(efi, to: bundle.url.appendingPathComponent("EFIVariables.fd"))
                 }
             }
+            PackageValidator.sanitize(&config, imported: true)
+            config.disks += discs
             if let screenshot = ["screenshot.png", "Screenshot.png"].map({ dataDir.appendingPathComponent($0) })
-                .first(where: { FileManager.default.fileExists(atPath: $0.path) }) {
+                .first(where: { FileManager.default.fileExists(atPath: $0.path) && !PackageValidator.isSymbolicLink($0) }) {
                 try? FileCloner.clone(screenshot, to: bundle.screenshotURL)
             }
             return try library.register(bundle: bundle, config: config)
@@ -98,13 +110,16 @@ enum UTMImporter {
             }
             try model.write(to: bundle.hardwareModelURL)
             try identifier.write(to: bundle.machineIdentifierURL)
-            guard PackageValidator.isContainedName(aux) else { throw VMError.invalidConfiguration("The UTM package refers to a file outside itself.") }
+            guard PackageValidator.isContainedName(aux), !PackageValidator.isSymbolicLink(dataDir.appendingPathComponent(aux)) else {
+                throw VMError.invalidConfiguration("The UTM package refers to a file outside itself.")
+            }
             try FileCloner.clone(dataDir.appendingPathComponent(aux), to: bundle.auxiliaryStorageURL)
         } else {
             if let generic = system["GenericPlatform"] as? [String: Any], let identifier = generic["machineIdentifier"] as? Data {
                 try identifier.write(to: bundle.genericMachineIdentifierURL)
             }
-            if let efi = boot["EfiVariableStoragePath"] as? String, PackageValidator.isContainedName(efi) {
+            if let efi = boot["EfiVariableStoragePath"] as? String, PackageValidator.isContainedName(efi),
+               !PackageValidator.isSymbolicLink(dataDir.appendingPathComponent(efi)) {
                 try FileCloner.clone(dataDir.appendingPathComponent(efi), to: bundle.efiVariablesURL)
             } else {
                 try PlatformProvisioner.provisionGeneric(bundle: bundle)

@@ -11,9 +11,14 @@ struct MicrosoftDownload: Equatable {
 
     /// Only Microsoft's own servers over HTTPS, and only disc images.
     static func accepts(_ url: URL) -> Bool {
-        guard url.scheme == "https", let host = url.host?.lowercased(),
-              host == "microsoft.com" || host.hasSuffix(".microsoft.com") else { return false }
-        return url.pathExtension.lowercased() == "iso"
+        isMicrosoftPage(url) && url.pathExtension.lowercased() == "iso"
+    }
+
+    /// A page on Microsoft's own servers over HTTPS. The sheet shows nothing else, so the
+    /// checksums it reads can only come from Microsoft.
+    static func isMicrosoftPage(_ url: URL) -> Bool {
+        guard url.scheme == "https", let host = url.host?.lowercased() else { return false }
+        return host == "microsoft.com" || host.hasSuffix(".microsoft.com")
     }
 }
 
@@ -91,7 +96,15 @@ private struct MicrosoftPageView: NSViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {
-            guard let url = action.request.url, MicrosoftDownload.accepts(url) else { return .allow }
+            guard let url = action.request.url else { return .cancel }
+            if action.targetFrame?.isMainFrame != false, !MicrosoftDownload.isMicrosoftPage(url), url.absoluteString != "about:blank" {
+                // anything that isn't Microsoft's (a privacy link, another site) opens in the browser
+                if action.navigationType == .linkActivated, ["https", "http"].contains(url.scheme ?? "") {
+                    NSWorkspace.shared.open(url)
+                }
+                return .cancel
+            }
+            guard MicrosoftDownload.accepts(url) else { return .allow }
             // the download itself: Orbit fetches it, the page doesn't
             if !handled {
                 handled = true

@@ -156,7 +156,7 @@ struct AppleConfigurationTests {
         var description: String { name }
     }
 
-    static let variants: [Variant] = [
+    nonisolated static let variants: [Variant] = [
         Variant(name: "defaults") { _ in },
         Variant(name: "NVMe disk") { $0.disks[0].interface = .nvme },
         Variant(name: "USB disk") { $0.disks[0].interface = .usb },
@@ -312,12 +312,19 @@ struct PackageSafetyTests {
         config.qemu.extraArguments = ["-drive", "file=/etc/hosts"]
         config.network.mode = .bridged
         let removed = PackageValidator.sanitize(&config, imported: true)
-        #expect(config.disks.map(\.path) == ["Disk.qcow2", "/Users/someone/installer.iso"])
-        #expect(config.disks[1].isReadOnly, "installer media is forced read-only")
+        // an installer outside the package could be any file on this Mac, handed to the guest
+        #expect(config.disks.map(\.path) == ["Disk.qcow2"])
         #expect(config.sharedFolders.isEmpty)
         #expect(config.qemu.extraArguments.isEmpty)
         #expect(config.network.mode == .nat)
-        #expect(removed.count == 4)
+        #expect(removed.count == 5)
+    }
+
+    @Test func ownInstallerMediaIsForcedReadOnly() {
+        var config = VMConfiguration(name: "x", engine: .qemu, guestOS: .linux, cpuCount: 1, memoryMiB: 1024)
+        config.disks = [DiskConfiguration(path: "/Users/someone/installer.iso", sizeGiB: 0, isReadOnly: false, isRemovable: true)]
+        PackageValidator.sanitize(&config, imported: false)
+        #expect(config.disks.first?.isReadOnly == true)
     }
 
     @Test func qemuEscapesCommasInPaths() {

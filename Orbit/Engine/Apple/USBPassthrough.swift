@@ -28,7 +28,7 @@ struct HostUSBDevice: Identifiable, Hashable {
 final class USBPassthrough: NSObject {
     static let shared = USBPassthrough()
 
-    static let entitlement = "com.apple.developer.accessory-access.usb"
+    nonisolated static let entitlement = "com.apple.developer.accessory-access.usb"
 
     /// Whether this copy of Orbit is signed with the USB entitlement.
     nonisolated static let isAvailable: Bool = {

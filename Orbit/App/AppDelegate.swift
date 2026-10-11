@@ -3,7 +3,24 @@ import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
-        MainActor.assumeIsolated { AppUpdater.shared.start() }
+        MainActor.assumeIsolated {
+            AppUpdater.shared.start()
+            startMachinesThatStartWithOrbit()
+        }
+    }
+
+    /// Machines set to start when Orbit opens. Suspended ones resume where they were.
+    @MainActor
+    private func startMachinesThatStartWithOrbit() {
+        #if DEBUG
+        // self-tests drive machines themselves
+        guard UserDefaults.standard.string(forKey: "OrbitSelfTest") == nil else { return }
+        #endif
+        let machines = VMLibrary.shared.vms.filter { $0.config.startWithOrbit && $0.state == .stopped && $0.installStatus == nil }
+        // one after another, so each start sees the memory the previous ones took
+        Task {
+            for vm in machines { await vm.start() }
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

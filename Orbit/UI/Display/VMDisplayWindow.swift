@@ -6,6 +6,8 @@ struct VMDisplayWindow: View {
     @AppStorage(PreferenceKey.captureSystemKeys) private var captureSystemKeys = true
     @Environment(\.dismiss) private var dismiss
     @State private var isPickingFolder = false
+    /// Float above other apps' windows, to keep an eye on the guest while working on the Mac.
+    @State private var keepOnTop = false
 
     var body: some View {
         ZStack {
@@ -29,6 +31,7 @@ struct VMDisplayWindow: View {
                     .glassEffect(.regular, in: .rect(cornerRadius: 16))
             }
         }
+        .background(WindowLevel(floating: keepOnTop))
         .transaction { if vm.isCapturingScreenshot { $0.disablesAnimations = true } }
         .navigationTitle(vm.config.name)
         .navigationSubtitle(vm.isDisposableRun ? "\(vm.state.label) · Disposable" : vm.state.label)
@@ -103,11 +106,28 @@ struct VMDisplayWindow: View {
                 Label("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right")
             }
             .help("Full screen (⌃⌘F)")
+            Toggle(isOn: $keepOnTop) {
+                Label("Keep on Top", systemImage: keepOnTop ? "pin.fill" : "pin")
+            }
+            .help("Keep this window above other apps' windows")
             Toggle(isOn: $captureSystemKeys) {
                 Label("Capture System Keys", systemImage: captureSystemKeys ? "command.circle.fill" : "command.circle")
             }
             .help("Send ⌘Tab, ⌘Space and other system shortcuts to the guest")
         }
+    }
+}
+
+/// Sets the hosting window's level: floating keeps it above other apps' windows.
+private struct WindowLevel: NSViewRepresentable {
+    var floating: Bool
+
+    func makeNSView(context: Context) -> NSView { NSView() }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        let level: NSWindow.Level = floating ? .floating : .normal
+        // the view joins its window after this first update
+        DispatchQueue.main.async { view.window?.level = level }
     }
 }
 

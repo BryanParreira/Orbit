@@ -234,8 +234,10 @@ private struct StorageSection: View {
                             newSize = disk.sizeGiB
                             resizing = disk
                         }
-                        .disabled(vm.state.isActive || !vm.snapshots.isEmpty)
-                        .help(vm.snapshots.isEmpty ? "Grow the disk" : "Delete snapshots before resizing")
+                        // a suspended guest's memory still describes the old size
+                        .disabled(vm.state.isActive || !vm.snapshots.isEmpty || vm.hasSavedState)
+                        .help(!vm.snapshots.isEmpty ? "Delete snapshots before resizing"
+                              : vm.hasSavedState ? "Start and shut down the machine (or discard its saved state) before resizing" : "Grow the disk")
                         if vm.config.disks.filter({ !$0.isRemovable }).count > 1 {
                             Button {
                                 confirmRemove = disk
@@ -392,6 +394,13 @@ private struct PortForwardEditor: View {
             })
     }
 
+    /// Ports are 1–65535; anything typed outside that is pulled back in.
+    private func port(_ id: PortForward.ID, _ keyPath: WritableKeyPath<PortForward, Int>) -> Binding<Int> {
+        let raw = binding(id, keyPath, default: 1)
+        return Binding(get: { raw.wrappedValue },
+                       set: { raw.wrappedValue = min(max($0, PackageValidator.validPorts.lowerBound), PackageValidator.validPorts.upperBound) })
+    }
+
     var body: some View {
         ForEach(forwards) { forward in
             HStack {
@@ -401,9 +410,9 @@ private struct PortForwardEditor: View {
                 }
                 .labelsHidden()
                 .frame(width: 70)
-                TextField("Host", value: binding(forward.id, \.hostPort, default: 0), format: .number.grouping(.never))
+                TextField("Host", value: port(forward.id, \.hostPort), format: .number.grouping(.never))
                 Image(systemName: "arrow.right").foregroundStyle(.secondary)
-                TextField("Guest", value: binding(forward.id, \.guestPort, default: 0), format: .number.grouping(.never))
+                TextField("Guest", value: port(forward.id, \.guestPort), format: .number.grouping(.never))
                 Button(role: .destructive) {
                     forwards.removeAll { $0.id == forward.id }
                 } label: {
@@ -515,6 +524,16 @@ private struct AdvancedSection: View {
                 Text("Saves memory to disk and resumes instantly next time.")
             }
             .disabled(config.engine == .qemu)
+            Toggle(isOn: $config.startWithOrbit) {
+                Text("Start when Orbit opens")
+                Text("For machines you always want running.")
+            }
+            Picker(selection: $config.automaticSnapshots) {
+                ForEach(AutomaticSnapshots.allCases) { Text($0.displayName).tag($0) }
+            } label: {
+                Text("Automatic snapshots")
+                Text("Taken as the machine starts. The newest \(AutomaticSnapshots.keep) are kept; each is an instant APFS clone.")
+            }
             Toggle("Boot from installer first", isOn: $config.bootFromInstaller)
                 .disabled(config.installerMedia == nil)
             if config.engine == .qemu {

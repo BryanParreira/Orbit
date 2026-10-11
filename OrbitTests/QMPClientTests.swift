@@ -128,7 +128,7 @@ struct PortForwarderTests {
         let listener = try NWListener(using: udp ? .udp : .tcp, on: .any)
         listener.newConnectionHandler = { connection in
             connection.start(queue: .global())
-            func echo() {
+            @Sendable func echo() {
                 let handle: @Sendable (Data?, NWConnection.ContentContext?, Bool, NWError?) -> Void = { data, _, _, error in
                     if let data, !data.isEmpty { connection.send(content: data, completion: .idempotent) }
                     if error == nil { echo() }
