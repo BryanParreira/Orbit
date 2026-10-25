@@ -85,6 +85,7 @@ Choose a system, review the settings Orbit picked, and click **Create**.
 | **Retina-aware text size** | Linux guests look the same size as macOS on a Retina screen, or switch to full Retina sharpness |
 | **Nested virtualization** | Run KVM inside Linux guests on M3 and newer |
 | **Live shared folders** | Add or remove Mac folders while the guest is running |
+| **Back up and automate** | Copy a machine to another drive in one click. Start, suspend and snapshot machines from Shortcuts and Spotlight |
 | **Disk performance** | Safe, Balanced or Fast, mapped to the hypervisor's sync and cache modes |
 
 When you need something Apple's hypervisor can't run, Orbit switches to **QEMU**: hardware-accelerated for ARM64 guests such as Windows 11, multi-threaded emulation for x86-64. Orbit can install QEMU for you from Settings.
@@ -119,6 +120,7 @@ Existing machines can take an extra disk or a new installer from their settings.
 - **Nothing installed on your system.** No helpers, login items or extensions, no administrator password, and it never partitions or formats your Mac's disks. Settings → Storage shows everything Orbit keeps, with sizes.
 - **Guests get only what you give them.** Clipboard sharing and the microphone are off by default; shared folders can be read-only.
 - **Your Mac comes first.** Machines can't take the memory macOS needs, and they pause themselves before the disk fills up.
+- **Diagnostics you control.** Orbit logs locally. **Help → Export Diagnostics** writes a report without machine names or paths, and nothing is sent unless you attach it yourself.
 - **Untrusted machines stay contained.** Packages from elsewhere can't reach files outside themselves and start without shared folders.
 
 Read the full [security model](SECURITY.md).

@@ -120,6 +120,16 @@ When the machine starts for the first time it boots from the installer. Follow t
 - **Text size (Linux):** if text looks too small or too large, use the **Aa** button in the machine window's toolbar, or the machine's settings (**⌘I**) → Display → **Text size**. It changes immediately. *Large* matches macOS and is the default. *Sharp* gives the full Retina resolution.
 - **Menu bar:** the planet icon in the menu bar shows every machine and lets you start, pause or stop them without opening the library. A moon appears on the ring while machines are running.
 
+- **IP address:** a running machine's address shows in the Network tile on its page. Control-click the tile to copy it.
+- **Back up:** **Back Up…** in a machine's menu copies it to a folder or drive you choose, as an `.orbitvm` package you can import again. Shut the machine down first. Snapshots live inside the machine, so a backup on another drive is what protects you from a disk failure.
+- **Automatic backups:** in the machine\'s settings (**⌘I**) → Advanced, choose a backup folder and **Daily** or **Weekly**. Orbit backs the machine up after it shuts down, keeps the newest three, and lists them with **Restore…**. A restore comes back as a new machine; nothing is replaced. If the backup drive is unplugged, the backup waits.
+- **Templates:** set up a machine the way you like, then choose **Use as a template** in its settings. **New Machine from Template** (right-click) makes an instant clone with its own identity. Templates appear in their own sidebar section.
+- **Tags and sorting:** add tags in a machine\'s settings, then sort and filter from the button above the sidebar list.
+- **Snapshot notes and locks:** right-click a snapshot to add a note or lock it. A locked snapshot is never pruned by automatic snapshots and can\'t be deleted until you unlock it.
+- **Everything at once:** **Machine → Suspend All Running Machines** and **Shut Down All Running Machines**, also in the menu bar.
+- **Beta versions:** turn on **Get beta versions** in Settings → Updates to try new releases early.
+- **Shortcuts and Spotlight:** machines appear in Spotlight, and the Shortcuts app has actions to start, shut down, suspend and snapshot a machine, and to get its IP address. From Terminal: `shortcuts run "Start Dev VM"`.
+
 Closing a machine's window doesn't stop it. It keeps running in the background, and you can reopen it from the library or the menu bar.
 
 ---
@@ -351,6 +361,8 @@ If you installed QEMU through Orbit, remove it with `brew uninstall qemu` (and `
 **Windows setup starts over after a restart.** Press no key at *Press any key to boot from CD or DVD* during setup's restarts. Once Windows is installed, eject the installer.
 
 **Keyboard shortcuts go to macOS instead of the guest.** Turn on the ⌘ button in the machine window's toolbar.
+
+**Something else is wrong.** **Help → Export Diagnostics…** saves a plain-text report with your Mac's details, a summary of your machines and Orbit's recent log. It has no machine names, file paths or personal data, and Orbit doesn't send it anywhere. Read it, then attach it to a report if you want help.
 
 Still stuck? [Report a problem](https://github.com/BryanParreira/Orbit/issues/new) and include what you were doing and the exact message.
 
