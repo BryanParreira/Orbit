@@ -16,6 +16,10 @@
   &nbsp;·&nbsp;
   <a href="SECURITY.md">Security</a>
   &nbsp;·&nbsp;
+  <a href="Legal/PRIVACY.md">Privacy</a>
+  &nbsp;·&nbsp;
+  <a href="Legal/TERMS.md">Terms</a>
+  &nbsp;·&nbsp;
   <a href="#build-from-source">Build from source</a>
 </p>
 

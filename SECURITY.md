@@ -22,7 +22,7 @@ Please report security problems privately through [GitHub Security Advisories](h
 
 ### Downloads
 
-- Guest systems are downloaded only over HTTPS from each project's official server.
+- Guest systems are downloaded only over HTTPS from each project's official server. A download that is redirected to plain HTTP is refused. Large files are fetched in several parallel ranges; the finished file goes through the same checksum verification as any other.
 - Every image is verified against the SHA-256 checksum the project publishes. Verification fails closed: an image that doesn't match is deleted, and an image whose checksum can't be fetched isn't used.
 - Windows is downloaded from the link Microsoft's own download page hands out, shown inside Orbit in a private browser view that keeps nothing afterwards. Orbit accepts only HTTPS links on microsoft.com, and checks the image against the SHA-256 checksums that page lists.
 - The VirtIO drivers for Windows guests come from the [virtio-win](https://github.com/virtio-win/virtio-win-pkg-scripts) project over HTTPS. The project publishes no checksum for its ISO, so Orbit pins one exact release by its SHA-256 and refuses anything else. Only the driver files are taken from it. The answer file and install script on the drivers disc are written by Orbit, run only inside the Windows guest during its setup, and don't set accounts, product keys or disk layout. Windows also checks each driver's signature before installing it.
@@ -33,6 +33,10 @@ Please report security problems privately through [GitHub Security Advisories](h
 - **Memory budget.** A machine won't start if the running machines plus this one would leave macOS less than 3 GB of memory, so guests can't push the Mac into heavy swapping.
 - **Disk space.** A machine won't start with less than 3 GB free, and a running machine is paused automatically if free space drops below 1 GB, before a guest can fill the disk macOS needs.
 - **Clean failures.** Interrupted downloads, imports and copies are removed rather than left half-written. Temporary files used while machines run are deleted when they stop, and leftovers from a crash are cleaned up the next time Orbit opens.
+
+### Locking a machine
+
+- **Require authentication to start.** Turn it on in a machine's settings and Orbit asks macOS to confirm it is you (Touch ID, Apple Watch or your password) before the machine starts, including when Orbit opens it automatically. It fails closed: if the Mac has no password set, the machine doesn't start. Orbit never sees your fingerprint or password.
 
 ### Virtual machines
 
@@ -56,6 +60,14 @@ A machine package is just a folder, so one you received from someone else could 
 
 - QCOW2 and VMDK images can name other files: a backing file, an external data file, the pieces of a split disk. A crafted image could use that to pass a guest any file you can read. Orbit refuses images that name files outside their own folder, when importing them and (for QCOW2) every time a machine starts.
 - Installer discs are passed to QEMU as plain data, never probed for a format.
+
+## Legal
+
+- [Privacy Policy](Legal/PRIVACY.md)
+- [Terms of Use](Legal/TERMS.md)
+- [Open source notices](NOTICE)
+
+The same documents are inside the app under Settings → About, and Orbit asks you to review them the first time it opens.
 
 ## Supported versions
 
